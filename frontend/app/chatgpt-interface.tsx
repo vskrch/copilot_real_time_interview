@@ -546,6 +546,68 @@ export default function ChatGPTInterface() {
     loadScreens();
   }, []);
 
+  // Add the polling effect inside the component
+  useEffect(() => {
+    const pollUpdates = async () => {
+      if (!sessionId || !isSessionActive) return;
+      
+      try {
+        // Check if we're waiting for a screenshot response
+        if (awaitingScreenshotResponse && sessionId) {
+          // Get session status to check for new responses
+          const status = await apiClient.getSessionStatus(sessionId);
+          
+          // Fix: Use type assertion or check for property existence
+          if (status && 'response_updates' in status && 
+              Array.isArray(status.response_updates) && 
+              status.response_updates.length > 0) {
+            
+            // Process each response update
+            status.response_updates.forEach(update => {
+              // Remove any waiting messages
+              setMessages(prev => prev.filter(m => !m.content.includes('Analyzing the screenshot')));
+              setAwaitingScreenshotResponse(false);
+              
+              // Add the new message
+              setMessages(prev => {
+                // Check if this is a new message or an update to the last assistant message
+                const lastMessage = prev[prev.length - 1];
+                if (lastMessage && lastMessage.role === 'assistant' && 
+                    !lastMessage.content.includes('Analyzing the screenshot')) {
+                  // Update the existing message
+                  return [
+                    ...prev.slice(0, -1),
+                    { ...lastMessage, content: update }
+                  ];
+                } else {
+                  // Add as a new message
+                  return [...prev, {
+                    id: `response-${Date.now()}`,
+                    role: 'assistant',
+                    content: update,
+                    timestamp: new Date().toISOString()
+                  }];
+                }
+              });
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error polling updates:', error);
+      }
+    };
+    
+    // Set up polling interval if we're waiting for a screenshot response
+    let interval: NodeJS.Timeout | null = null;
+    if (awaitingScreenshotResponse) {
+      interval = setInterval(pollUpdates, 2000); // Poll every 2 seconds
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [sessionId, isSessionActive, awaitingScreenshotResponse]);
+
   // Render the screen selection dropdown
   const renderScreenSelection = () => {
     return (
@@ -666,63 +728,6 @@ export default function ChatGPTInterface() {
   )
 }
 
-// Effect to poll for updates (moved inside the component)
-useEffect(() => {
-  const pollUpdates = async () => {
-    if (!sessionId || !isSessionActive) return;
-    
-    try {
-      // Check if we're waiting for a screenshot response
-      if (awaitingScreenshotResponse) {
-        // Get session status to check for new responses
-        const status = await apiClient.getSessionStatus(sessionId);
-        
-        if (status && status.response_updates && status.response_updates.length > 0) {
-          // Process each response update
-          status.response_updates.forEach(update => {
-            // Remove any waiting messages
-            setMessages(prev => prev.filter(m => !m.content.includes('Analyzing the screenshot')));
-            setAwaitingScreenshotResponse(false);
-            
-            // Add the new message
-            setMessages(prev => {
-              // Check if this is a new message or an update to the last assistant message
-              const lastMessage = prev[prev.length - 1];
-              if (lastMessage && lastMessage.role === 'assistant' && 
-                  !lastMessage.content.includes('Analyzing the screenshot')) {
-                // Update the existing message
-                return [
-                  ...prev.slice(0, -1),
-                  { ...lastMessage, content: update }
-                ];
-              } else {
-                // Add as a new message
-                return [...prev, {
-                  id: `response-${Date.now()}`,
-                  role: 'assistant',
-                  content: update,
-                  timestamp: new Date().toISOString()
-                }];
-              }
-            });
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error polling updates:', error);
-    }
-  };
-  
-  // Set up polling interval if we're waiting for a screenshot response
-  let interval: NodeJS.Timeout | null = null;
-  if (awaitingScreenshotResponse) {
-    interval = setInterval(pollUpdates, 2000); // Poll every 2 seconds
-  }
-  
-  return () => {
-    if (interval) clearInterval(interval);
-  };
-}, [sessionId, isSessionActive, awaitingScreenshotResponse]);
 
 
 

@@ -20,6 +20,7 @@ export interface SessionStatusResponse extends ApiResponse {
     is_active: boolean;
     start_time: string;
     last_activity: string;
+    response_updates?: string[];
   };
 }
 
