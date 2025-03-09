@@ -408,53 +408,39 @@ export default function ChatGPTInterface() {
       setIsCapturingScreen(true);
       
       // Add a waiting message with a unique identifier
-      const messageId = `screenshot-${Date.now()}`;
-      // @ts-ignore - Adding temporary id for tracking this message
-      setMessages(prev => [...prev, { 
-        role: 'assistant', 
-        content: 'Capturing and analyzing the screen... (please wait a few seconds)',
-        id: messageId 
+      const waitingMessageId = `waiting-${Date.now()}`;
+      setMessages(prev => [...prev, {
+        id: waitingMessageId,
+        role: 'assistant',
+        content: 'Analyzing the screenshot...',
+        timestamp: new Date().toISOString()
       }]);
       
-      // Capture the screenshot from the browser
-      const imageData = await captureScreenshot(selectedScreen);
+      // First, request the backend to take a screenshot
+      const success = await apiClient.takeScreenshot(sessionId, selectedScreen);
       
-      if (imageData) {
-        // Show a preview of the captured screenshot (optional)
-        setMessages(prev => prev.map(msg => 
-          // @ts-ignore - Using temporary id for tracking
-          msg.id === messageId ? 
-          { ...msg, content: 'Capturing and analyzing the screen... (image sent to server)' } : 
-          msg
-        ));
-        
-        // Send the captured screenshot to the backend
-        const success = await apiClient.sendScreenshot(sessionId, imageData);
-        
-        if (!success) {
-          throw new Error("Error sending screenshot to backend");
-        }
-        
-        // Let the user know we're waiting for analysis
-        setMessages(prev => prev.map(msg => 
-          // @ts-ignore - Using temporary id for tracking
-          msg.id === messageId ? 
-          { ...msg, content: 'Screenshot sent! Waiting for server analysis...' } : 
-          msg
-        ));
-      } else {
-        throw new Error("Unable to capture screenshot");
+      if (!success) {
+        throw new Error("Failed to capture screenshot");
       }
       
-      // The response will be handled via SSE events
-    } catch (error) {
-      console.error("Error capturing screenshot:", error);
+      // Set a flag to check for new messages in the polling function
+      setAwaitingScreenshotResponse(true);
       
-      // Add an error message
-      setMessages(prev => [
-        ...prev,
-        { role: 'assistant', content: `An error occurred while capturing the screenshot: ${error instanceof Error ? error.message : 'Unknown error'}` }
-      ]);
+      // Log success
+      console.log("Screenshot captured and sent for analysis");
+      
+      // Wait for the response to appear in the next poll
+      // The polling function will remove the waiting message when the real response arrives
+      
+    } catch (error) {
+      console.error('Error analyzing screenshot:', error);
+      setMessages(prev => prev.filter(m => !m.content.includes('Analyzing the screenshot')));
+      setMessages(prev => [...prev, {
+        id: `error-${Date.now()}`,
+        role: 'assistant',
+        content: 'Error analyzing screenshot. Please try again.',
+        timestamp: new Date().toISOString()
+      }]);
     } finally {
       setIsCapturingScreen(false);
     }
@@ -666,6 +652,54 @@ export default function ChatGPTInterface() {
     </div>
   )
 }
+
+// In the polling function, add logic to handle screenshot responses
+useEffect(() => {
+  const pollUpdates = async () => {
+    if (!sessionId || !isSessionActive) return;
+    
+    try {
+      // Check for new responses
+      if (responseUpdates && responseUpdates.length > 0) {
+        // Process each response update
+        responseUpdates.forEach(update => {
+          // Check if we're waiting for a screenshot response
+          if (awaitingScreenshotResponse) {
+            // Remove any waiting messages
+            setMessages(prev => prev.filter(m => !m.content.includes('Analyzing the screenshot')));
+            setAwaitingScreenshotResponse(false);
+          }
+          
+          // Add the new message
+          setMessages(prev => {
+            // Check if this is a new message or an update to the last assistant message
+            const lastMessage = prev[prev.length - 1];
+            if (lastMessage && lastMessage.role === 'assistant' && 
+                !lastMessage.content.includes('Analyzing the screenshot')) {
+              // Update the existing message
+              return [
+                ...prev.slice(0, -1),
+                { ...lastMessage, content: update }
+              ];
+            } else {
+              // Add as a new message
+              return [...prev, {
+                id: `response-${Date.now()}`,
+                role: 'assistant',
+                content: update,
+                timestamp: new Date().toISOString()
+              }];
+            }
+          });
+        });
+      }
+      
+      // The response will be handled via SSE events
+    } catch (error) {
+      console.error('Error polling updates:', error);
+    }
+  };
+}, [sessionId, isSessionActive, awaitingScreenshotResponse]);
 
 
 

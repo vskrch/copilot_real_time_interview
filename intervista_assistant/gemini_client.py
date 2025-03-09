@@ -52,8 +52,8 @@ class GeminiClient:
             return False, "Gemini API not available"
         
         try:
-            # Create the model
-            model = self.client.GenerativeModel('gemini-pro-vision')
+            # Create the model - use the latest Gemini vision model
+            model = self.client.GenerativeModel('gemini-1.5-pro-vision')
             
             # Process the image - handle both base64 strings and raw binary data
             if "base64," in image_data:
@@ -71,6 +71,9 @@ class GeminiClient:
             
             # Generate response
             response = model.generate_content(image_parts)
+            
+            # Log success
+            logger.info("Image analysis completed successfully with Gemini")
             
             return True, response.text
         except Exception as e:

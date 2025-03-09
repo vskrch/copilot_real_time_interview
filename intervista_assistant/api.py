@@ -361,47 +361,54 @@ class SessionManager:
             
             if gemini_api_key and not use_openai:
                 # Use Gemini for image analysis
-                import google.generativeai as genai
-                
-                # Configure Gemini
-                genai.configure(api_key=gemini_api_key)
-                
-                # Extract text content from messages for context
-                context = ""
-                for msg in messages:
-                    if msg["role"] != "system" and isinstance(msg["content"], str):
-                        context += f"{msg['role']}: {msg['content']}\n"
-                
-                # Create prompt for image analysis
-                prompt = f"""
-                Please analyze this screenshot from a technical interview or coding exercise.
-                Describe what you see, identify any code, algorithms, or technical concepts.
-                Provide helpful insights about the content.
-                
-                Previous context:
-                {context}
-                """
-                
-                # Set up the model
-                model = genai.GenerativeModel('gemini-pro-vision')
-                
-                # Process the image
-                image_parts = [
-                    {"text": prompt},
-                    {"inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_data
-                    }}
-                ]
-                
-                # Generate response
-                response = model.generate_content(image_parts)
-                assistant_response = response.text
-                
-                logger.info("Image analyzed successfully using Gemini API")
+                try:
+                    # Initialize Gemini client if needed
+                    if not hasattr(self, 'gemini_client'):
+                        from .gemini_client import GeminiClient
+                        self.gemini_client = GeminiClient()
+                    
+                    # Check if Gemini is available
+                    if self.gemini_client.is_available():
+                        logger.info("Using Gemini API for image analysis")
+                        
+                        # Extract text content from messages for context
+                        context = ""
+                        for msg in messages:
+                            if msg["role"] != "system" and isinstance(msg["content"], str):
+                                context += f"{msg['role']}: {msg['content']}\n"
+                        
+                        # Create prompt for image analysis
+                        prompt = f"""
+                        Please analyze this screenshot from a technical interview or coding exercise.
+                        Describe what you see, identify any code, algorithms, or technical concepts.
+                        Provide helpful insights about the content.
+                        
+                        Previous context:
+                        {context}
+                        """
+                        
+                        # Use the gemini_client to analyze the image
+                        success, assistant_response = self.gemini_client.analyze_image(image_data, prompt)
+                        
+                        if not success:
+                            logger.warning(f"Gemini API failed: {assistant_response}. Falling back to OpenAI.")
+                            raise Exception(assistant_response)
+                    else:
+                        raise Exception("Gemini API not available")
+                except Exception as e:
+                    logger.error(f"Error using Gemini API: {str(e)}. Falling back to OpenAI.")
+                    # Fall back to OpenAI
+                    logger.info("Using OpenAI API for image analysis (fallback)")
+                    response = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=messages,
+                        max_tokens=4000
+                    )
+                    
+                    assistant_response = response.choices[0].message.content
             else:
-                # Fallback to OpenAI
-                logger.info("Using OpenAI API for image analysis (fallback)")
+                # Use OpenAI directly
+                logger.info("Using OpenAI API for image analysis")
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=messages,
@@ -417,23 +424,24 @@ class SessionManager:
             })
             
             # Log the response
-            logger.info(f"Image analysis response: {assistant_response[:100]}...")
+            logger.info(f"Image analysis response generated: {assistant_response[:100]}...")
             
-            # Send the response as an update
+            # Send the response as an update - ensure this is marked as final
             self.handle_response(assistant_response, final=True)
             
             # Also send a message through the real-time thread to maintain context
-            if self.text_thread and self.text_thread.connected:
-                context_msg = "[I have analyzed the screenshot you sent me. If you have specific questions, feel free to ask!]"
+            if hasattr(self, 'text_thread') and self.text_thread and hasattr(self.text_thread, 'connected') and self.text_thread.connected:
+                context_msg = "[I've analyzed the screenshot and provided detailed insights in the response above.]"
                 self.text_thread.send_text(context_msg)
             
-            logger.info("Image analysis completed successfully")
+            # Ensure the response is added to the updates queue for the frontend to retrieve
+            self.response_updates.append(assistant_response)
             
         except Exception as e:
-            error_message = f"Error analyzing image: {str(e)}"
+            error_message = f"Error during image analysis: {str(e)}"
             logger.error(error_message)
             self.handle_error(error_message)
-    
+
     def _prepare_messages_with_history(self, base64_image=None):
         """Prepares messages for the API including chat history."""
         messages = [

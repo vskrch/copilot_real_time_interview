@@ -213,33 +213,40 @@ class WebRealtimeTextThread:
                     with self.lock:
                         self.response_pending = True
             
+            # Replace Italian log messages with English equivalents
             def on_message(ws, message):
                 try:
-                    event = json.loads(message)
-                    event_type = event.get('type', 'unknown')
-                    logger.debug(f"[OpenAI] Evento ricevuto: {event_type}")
+                    # Log the raw message for debugging at trace level
+                    logger.debug(f"WebSocket message received: {message[:100]}...")
                     
-                    if event_type == 'response.audio_transcript.delta':
-                        delta = event.get('delta', '')
-                        self._response_transcript_buffer += delta
-                        logger.debug(f"[OpenAI] Delta trascrizione audio: {delta}")
-                    elif event_type == 'response.audio_transcript.done':
-                        transcribed_text = self._response_transcript_buffer.strip()
-                        self.current_text = transcribed_text
-                        self.emit_response(transcribed_text)
-                        logger.info(f"[OpenAI] Trascrizione audio completata: {transcribed_text[:50]}...")
-                        self._response_transcript_buffer = ""
-                    elif event_type == 'response.text.delta':
-                        delta = event.get('delta', '')
-                        self._response_buffer += delta
-                        logger.debug(f"[OpenAI] Delta testo: {delta}")
-                    elif event_type in ('response.text.done', 'response.done'):
-                        if self._response_buffer.strip():
-                            self.emit_response(self._response_buffer)
-                            logger.info(f"[OpenAI] Risposta completata: {self._response_buffer[:50]}...")
-                            with self.lock:
-                                self.response_pending = False
-                            self._response_buffer = ""
+                    # Parse the message as JSON
+                    event = json.loads(message)
+                    event_type = event.get("type", "")
+                    
+                    # Handle different event types
+                    if event_type == "response.text.delta":
+                        # Text response delta
+                        delta = event.get("delta", "")
+                        if delta:
+                            self.current_response_text += delta
+                            self.response_signal.emit(delta)
+                            logger.debug(f"Text delta received: {delta[:50]}...")
+                    
+                    elif event_type == "response.text.done":
+                        # Text response completed
+                        logger.info("Text response completed")
+                        
+                    elif event_type == "response.done":
+                        # Full response completed
+                        logger.info("Response completed")
+                        self.processing_response = False
+                        
+                    if self._response_buffer.strip():
+                        self.emit_response(self._response_buffer)
+                        logger.info(f"[OpenAI] Risposta completata: {self._response_buffer[:50]}...")
+                        with self.lock:
+                            self.response_pending = False
+                        self._response_buffer = ""
                     elif event_type == 'error':
                         with self.lock:
                             self.response_pending = False

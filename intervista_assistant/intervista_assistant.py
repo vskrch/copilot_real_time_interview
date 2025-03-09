@@ -338,9 +338,12 @@ class IntervistaAssistant(QMainWindow):
                                     "You need to start a session first before analyzing images.")
                 return
             
-            # Ottieni l'indice del monitor selezionato dal menu a tendina
-            selected_monitor = self.screen_selector_combo.currentData()
-            logger.info(f"Cattura screenshot del monitor: {selected_monitor}")
+            # Get the selected monitor index from the dropdown menu
+            # First check if the attribute exists
+            selected_monitor = 0  # Default to primary monitor
+            if hasattr(self, 'screen_selector_combo') and self.screen_selector_combo is not None:
+                selected_monitor = self.screen_selector_combo.currentData()
+            logger.info(f"Capturing screenshot of monitor: {selected_monitor}")
                 
             self.showMinimized()
             time.sleep(0.5)
@@ -355,17 +358,17 @@ class IntervistaAssistant(QMainWindow):
             # Prepare messages for gpt-4o including chat history
             messages = self._prepare_messages_with_history(base64_image=None)
             
-            # Aggiorna l'ultimo messaggio per includere l'immagine (verrà convertita nel worker)
-            messages[-1]["content"][1]["image_url"]["url"] = "placeholder"  # Sarà sostituito nel worker
+            # Update the last message to include the image (will be replaced in the worker)
+            messages[-1]["content"][1]["image_url"]["url"] = "placeholder"  # Will be replaced in the worker
             
-            # Crea un thread e un worker per l'analisi asincrona
+            # Create a thread and worker for asynchronous analysis
             self.analysis_thread = QThread()
             self.analysis_worker = ImageAnalysisWorker(self.client, messages, screenshot_path)
             
-            # Sposta il worker nel thread
+            # Move the worker to the thread
             self.analysis_worker.moveToThread(self.analysis_thread)
             
-            # Connetti i segnali e gli slot
+            # Connect signals and slots
             self.analysis_thread.started.connect(self.analysis_worker.analyze)
             self.analysis_worker.analysisComplete.connect(self.on_analysis_complete)
             self.analysis_worker.error.connect(self.show_error)
@@ -374,7 +377,7 @@ class IntervistaAssistant(QMainWindow):
             self.analysis_thread.finished.connect(self.analysis_worker.deleteLater)
             self.analysis_thread.finished.connect(self.analysis_thread.deleteLater)
             
-            # Avvia il thread
+            # Start the thread
             self.analysis_thread.start()
             
             logger.info(f"Screenshot capture initiated: {screenshot_path}")
@@ -385,14 +388,14 @@ class IntervistaAssistant(QMainWindow):
             logger.error(error_msg)
     
     def on_analysis_complete(self, assistant_response):
-        """Callback invocato quando l'analisi dell'immagine è completata."""
+        """Callback invoked when image analysis is completed."""
         try:
-            # Aggiorna l'UI con la risposta
+            # Update the UI with the response
             self.update_response(assistant_response)
             
-            # Invia l'analisi come testo al thread realtime per mantenere il flusso della conversazione
+            # Send the analysis as text to the realtime thread to maintain conversation flow
             if self.text_thread and self.text_thread.connected:
-                # Invia una versione ridotta della risposta al thread realtime
+                # Send a reduced version of the response to the realtime thread
                 context_msg = f"[I've analyzed the screenshot of a coding exercise/technical interview question. Here's what I found: {assistant_response[:500]}... Let me know if you need more specific details or have questions about how to approach this problem.]"
                 success = self.text_thread.send_text(context_msg)
                 if success:
@@ -635,54 +638,18 @@ class ImageAnalysisWorker(QObject):
         self.base64_image = None
     
     def analyze(self):
-        """Analyze the image using the appropriate API."""
+        """Performs image analysis in the background."""
         try:
-            # Read and encode the image
-            with open(self.screenshot_path, "rb") as image_file:
-                self.base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            # Update the image URL in the messages
-            image_url = f"data:image/jpeg;base64,{self.base64_image}"
-            for i, message in enumerate(self.messages):
-                if message["role"] == "user" and isinstance(message["content"], list):
-                    for j, content in enumerate(message["content"]):
-                        if content.get("type") == "image_url":
-                            self.messages[i]["content"][j]["image_url"]["url"] = image_url
-            
-            # Use OpenAI's API for image analysis (even with local transcription)
-            # Local image analysis would require a separate implementation
-            logger.info("Sending image to OpenAI for analysis")
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=self.messages,
-                max_tokens=4000
-            )
-            
-            # Extract the response text
-            assistant_response = response.choices[0].message.content
-            logger.info(f"Received response from OpenAI: {assistant_response[:100]}...")
-            
-            # Emit the completion signal
-            self.analysisComplete.emit(assistant_response)
-            
-        except Exception as e:
-            error_msg = f"Error analyzing image: {str(e)}"
-            logger.error(error_msg)
-            self.error.emit(error_msg)
-    
-    def analyze(self):
-        """Esegue l'analisi dell'immagine in background."""
-        try:
-            # Converti l'immagine in base64 se non è già stato fatto
+            # Convert image to base64 if not already done
             if not self.base64_image:
                 with open(self.screenshot_path, "rb") as image_file:
                     self.base64_image = base64.b64encode(image_file.read()).decode('utf-8')
             
-            # Aggiorna l'URL dell'immagine nel messaggio
+            # Update the image URL in the message
             image_url = f"data:image/jpeg;base64,{self.base64_image}"
             self.messages[-1]["content"][1]["image_url"]["url"] = image_url
             
-            # Chiamata a GPT-4o per analizzare l'immagine
+            # Call GPT-4o to analyze the image
             logger.info("Sending image to gpt-4o-mini for analysis")
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -690,17 +657,17 @@ class ImageAnalysisWorker(QObject):
                 max_tokens=1000
             )
             
-            # Ottieni la risposta dell'assistente
+            # Get the assistant's response
             assistant_response = response.choices[0].message.content
             logger.info(f"Received response from gpt-4o: {assistant_response[:100]}...")
             
-            # Emetti il segnale con la risposta
+            # Emit the signal with the response
             self.analysisComplete.emit(assistant_response)
             
         except Exception as e:
             error_msg = f"Error during image analysis: {str(e)}"
             logger.error(error_msg)
-            self.error.emit(error_msg) 
+            self.error.emit(error_msg)
 
 class ThinkWorker(QObject):
     """Worker class for asynchronous advanced thinking processing."""

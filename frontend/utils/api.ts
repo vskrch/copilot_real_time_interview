@@ -191,6 +191,7 @@ const apiClient = {
    */
   async sendScreenshot(sessionId: string, imageData: string): Promise<boolean> {
     try {
+      console.log("Sending screenshot for analysis...");
       const response = await fetch(`${API_BASE_URL}/sessions/analyze-screenshot`, {
         method: 'POST',
         headers: {
@@ -203,10 +204,12 @@ const apiClient = {
       });
       
       if (!response.ok) {
+        console.error(`Error sending screenshot: ${response.status}`);
         throw new Error(`Error sending screenshot: ${response.status}`);
       }
       
       const data = await response.json() as ApiResponse;
+      console.log("Screenshot analysis request successful:", data.success);
       return data.success;
     } catch (error) {
       console.error('Error sending screenshot:', error);
@@ -295,4 +298,4 @@ const apiClient = {
   }
 };
 
-export default apiClient; 
+export default apiClient;
