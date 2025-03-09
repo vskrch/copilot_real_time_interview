@@ -20,6 +20,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
 from openai import OpenAI
+from dotenv import load_dotenv  # Add dotenv import
 
 # Import the thread for real-time API communication with OpenAI
 try:
@@ -41,14 +42,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("Backend server started")
 
-# Flask and SocketIO initialization
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize OpenAI client with API key from environment
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    logger.error("OpenAI API Key not found. Please set the OPENAI_API_KEY environment variable.")
+    raise ValueError("OpenAI API Key not found. Please set the OPENAI_API_KEY environment variable.")
+else:
+    client = OpenAI(api_key=api_key)
+    logger.info("OpenAI client initialized successfully")
+
+
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
-socketio = SocketIO(app, cors_allowed_origins="*", logger=False, engineio_logger=False)  # Disabled logging for Socket.IO
+CORS(app)  # Enable CORS for all routes
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# OpenAI client for non-real-time functionalities
-client = OpenAI()
-
+# ... rest of the file ...
 # Active sessions - stored as a dictionary session_id -> SessionManager
 active_sessions = {}
 
@@ -337,21 +348,67 @@ class SessionManager:
             error_message = f"Error processing screenshot: {str(e)}"
             logger.error(error_message)
             return False, error_message
-    
+        
     def _analyze_image_async(self, messages, image_data):
-        """Performs image analysis asynchronously."""
+        """Performs image analysis asynchronously using Gemini API with OpenAI fallback."""
         try:
             # Send a processing notification
             self.handle_response("Analyzing the screenshot...", final=False)
             
-            # Call OpenAI API for image analysis
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                max_tokens=4000
-            )
+            # Check if Gemini API key is available
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
+            use_openai = os.getenv("USE_OPENAI_FOR_IMAGES", "false").lower() == "true"
             
-            assistant_response = response.choices[0].message.content
+            if gemini_api_key and not use_openai:
+                # Use Gemini for image analysis
+                import google.generativeai as genai
+                
+                # Configure Gemini
+                genai.configure(api_key=gemini_api_key)
+                
+                # Extract text content from messages for context
+                context = ""
+                for msg in messages:
+                    if msg["role"] != "system" and isinstance(msg["content"], str):
+                        context += f"{msg['role']}: {msg['content']}\n"
+                
+                # Create prompt for image analysis
+                prompt = f"""
+                Please analyze this screenshot from a technical interview or coding exercise.
+                Describe what you see, identify any code, algorithms, or technical concepts.
+                Provide helpful insights about the content.
+                
+                Previous context:
+                {context}
+                """
+                
+                # Set up the model
+                model = genai.GenerativeModel('gemini-pro-vision')
+                
+                # Process the image
+                image_parts = [
+                    {"text": prompt},
+                    {"inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": image_data
+                    }}
+                ]
+                
+                # Generate response
+                response = model.generate_content(image_parts)
+                assistant_response = response.text
+                
+                logger.info("Image analyzed successfully using Gemini API")
+            else:
+                # Fallback to OpenAI
+                logger.info("Using OpenAI API for image analysis (fallback)")
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    max_tokens=4000
+                )
+                
+                assistant_response = response.choices[0].message.content
             
             # Add to chat history
             self.chat_history.append({
@@ -451,30 +508,78 @@ class SessionManager:
             error_message = f"Error in the thinking process: {str(e)}"
             self.handle_error(error_message)
     
-    def _generate_summary(self, messages):
-        """Generates a summary of the conversation."""
-        try:
-            # Prepare messages for the summary
-            summary_messages = messages.copy()
-            summary_messages.append({
-                "role": "user",
-                "content": "Analyze our conversation and create a detailed summary that includes: 1) The context of the interview 2) The main challenges/questions discussed 3) The key points of my answers 4) Areas for improvement. Be specific and detailed."
-            })
-            
-            # API call
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=summary_messages,
-                max_tokens=2000
-            )
-            
-            summary = response.choices[0].message.content
-            logger.info("Summary generated successfully")
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Error generating summary: {str(e)}")
-            raise
+    # In the ThinkWorker class
+
+        def _generate_summary(self):
+            """Generates a summary of the conversation 
+            using Gemini API with OpenAI fallback."""
+            try:
+                # Determine which API to use - default to Gemini if available
+                gemini_api_key = os.getenv("GEMINI_API_KEY")
+                use_openai = os.getenv("USE_OPENAI_FOR_SUMMARY", "false").lower() == "true"
+                
+                if gemini_api_key and not use_openai:
+                    import google.generativeai as genai
+                    
+                    # Configure Gemini
+                    genai.configure(api_key=gemini_api_key)
+                    
+                    # Convert messages to Gemini format
+                    gemini_messages = []
+                    for msg in self.chat_history:
+                        role = "user" if msg["role"] == "user" else "model"
+                        gemini_messages.append({"role": role, "parts": [msg["content"]]})
+                    
+                    # Add the summary request
+                    prompt = "Please provide a concise summary of this interview conversation. Identify the main topics discussed, key questions asked, and important points made."
+                    
+                    # Create model and generate content
+                    model = genai.GenerativeModel('gemini-pro')
+                    
+                    # If we have history, use it
+                    if gemini_messages:
+                        chat = model.start_chat(history=gemini_messages)
+                        response = chat.send_message(prompt)
+                    else:
+                        # If no history, just send the prompt
+                        response = model.generate_content(prompt)
+                    
+                    # Extract summary
+                    summary = response.text
+                    logger.info("Summary generated successfully using Gemini API")
+                    return summary
+                else:
+                    # Use OpenAI API for summary generation (fallback)
+                    logger.info("Using OpenAI API for summary generation (fallback)")
+                    
+                    # Prepare messages for OpenAI
+                    messages = [
+                        {"role": "system", "content": "You are a helpful assistant tasked with summarizing an interview conversation."},
+                    ]
+                    
+                    # Add chat history
+                    for msg in self.chat_history:
+                        messages.append(msg)
+                        
+                    # Add the summary request
+                    messages.append({
+                        "role": "user", 
+                        "content": "Please provide a concise summary of this interview conversation. Identify the main topics discussed, key questions asked, and important points made."
+                    })
+                    
+                    response = client.chat.completions.create(
+                        model="gpt-3.5-turbo",  # Using a smaller model for summaries
+                        messages=messages,
+                        max_tokens=1000
+                    )
+
+                    # Extract summary
+                    summary = response.choices[0].message.content
+                    logger.info("Summary generated successfully using OpenAI API")
+                    return summary
+            except Exception as e:
+                logger.error(f"Error generating summary: {str(e)}")
+                raise        
     
     def _generate_solution(self, summary):
         """Generates a detailed solution based on the summary."""

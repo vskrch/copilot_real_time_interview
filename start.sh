@@ -18,6 +18,41 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Determine the path of the current directory (where the script is located)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+BACKEND_DIR="$SCRIPT_DIR/intervista_assistant"
+FRONTEND_DIR="$SCRIPT_DIR/frontend"
+
+# Check for required Python dependencies - using a more reliable approach
+echo "Checking for required Python dependencies..."
+# Install dependencies directly to ensure they're available
+poetry run pip install werkzeug flask flask-cors flask-socketio python-socketio python-dotenv google-generativeai
+
+# Check that the directories exist
+if [ ! -d "$BACKEND_DIR" ]; then
+  echo "Backend directory not found: $BACKEND_DIR"
+  exit 1
+fi
+
+if [ ! -d "$FRONTEND_DIR" ]; then
+  echo "Frontend directory not found: $FRONTEND_DIR"
+  exit 1
+fi
+
+# Check if npm is installed in the frontend directory
+echo "Checking frontend dependencies..."
+cd "$FRONTEND_DIR"
+if ! command -v npm &> /dev/null; then
+  echo "npm not found. Please install Node.js and npm."
+  exit 1
+fi
+
+# Install frontend dependencies if node_modules doesn't exist
+if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+  echo "Installing frontend dependencies..."
+  npm install
+fi
+
 # Kill any previous processes on the requested ports
 echo "Checking and cleaning up existing processes..."
 if lsof -i:3000 -t &> /dev/null; then
@@ -30,22 +65,6 @@ if lsof -i:8000 -t &> /dev/null; then
   echo "Terminating processes on port 8000..."
   kill $(lsof -i:8000 -t) 2>/dev/null || true
   sleep 1
-fi
-
-# Determine the path of the current directory (where the script is located)
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-BACKEND_DIR="$SCRIPT_DIR/intervista_assistant"
-FRONTEND_DIR="$SCRIPT_DIR/frontend"
-
-# Check that the directories exist
-if [ ! -d "$BACKEND_DIR" ]; then
-  echo "Backend directory not found: $BACKEND_DIR"
-  exit 1
-fi
-
-if [ ! -d "$FRONTEND_DIR" ]; then
-  echo "Frontend directory not found: $FRONTEND_DIR"
-  exit 1
 fi
 
 # Create log directory if it doesn't exist
@@ -68,7 +87,7 @@ else
 fi
 
 # Run backend with output to console instead of background
-python api_launcher.py 2>&1 | tee "$SCRIPT_DIR/logs/backend.log" &
+poetry run python api_launcher.py 2>&1 | tee "$SCRIPT_DIR/logs/backend.log" &
 BACKEND_PID=$!
 echo "Backend started with PID: $BACKEND_PID"
 
@@ -115,4 +134,4 @@ echo "====================================================="
 
 # Keep the script running
 echo "The application is running. Press Ctrl+C to terminate."
-wait 
+wait

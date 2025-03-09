@@ -1,110 +1,30 @@
 # Intervista Assistant
 
-Un assistente AI per colloqui tecnici con frontend React/Next.js.
-
-## Struttura del progetto
-
-Il progetto è organizzato in due parti principali:
-
-1. **Backend API** (Python/FastAPI): Gestisce la logica dell'applicazione e le connessioni con l'API di OpenAI
-2. **Frontend** (React/Next.js): Interfaccia utente moderna e reattiva
-
-## Prerequisiti
-
-- Python 3.8+
-- [Poetry](https://python-poetry.org/docs/#installation) per la gestione delle dipendenze Python
-- Node.js 18+
-- npm o yarn
-- Un account OpenAI con una chiave API valida
-
-## Configurazione
-
-### Backend (Python)
-
-1. Clonare il repository
-2. Installare le dipendenze con Poetry:
-   ```bash
-   poetry install
-   ```
-3. Creare un file `.env` nella directory principale con il seguente contenuto:
-   ```
-   OPENAI_API_KEY=your_openai_api_key_here
-   ```
-
-### Frontend (Next.js)
-
-1. Accedere alla directory del frontend:
-   ```bash
-   cd frontend
-   ```
-2. Installare le dipendenze:
-   ```bash
-   npm install
-   # oppure
-   yarn install
-   ```
-3. Creare un file `.env.local` con il seguente contenuto:
-   ```
-   NEXT_PUBLIC_API_URL=http://localhost:8000
-   ```
-
-## Avvio dell'applicazione
-
-### Avvio del Backend API
-
-```bash
-# Dalla directory principale del progetto
-poetry run start-api
-# oppure
-poetry run python -m intervista_assistant.api_launcher
-```
-
-Il server API sarà disponibile all'indirizzo `http://localhost:8000`.
-
-### Avvio del Frontend Next.js
-
-```bash
-# Dalla directory frontend
-npm run dev
-# oppure
-yarn dev
-```
-
-L'applicazione frontend sarà disponibile all'indirizzo `http://localhost:3000`.
-
-## Funzionalità
-
-- Invio di messaggi testuali
-- Registrazione e trascrizione audio
-- Analisi di screenshot
-- Supporto per analisi avanzata ("Think")
-- Interfaccia utente moderna e reattiva
-
 ## Description
 
-Interview Assistant is a desktop application that helps software developers during technical job interviews. The application records the interview audio, transcribes it using GPT-4o Audio, detects technical questions, and generates detailed answers using GPT-4o.
-
-The answers are displayed both in the main interface and in easily accessible popups during the interview.
+Interview Assistant is a desktop application that helps software developers during technical job interviews. The application records the interview audio, transcribes it using either OpenAI's API or local Whisper.cpp with Mac GPU offloading, detects technical questions, and generates detailed answers.
 
 ## Main Features
 
-- **Real-Time Audio Transcription**: Records and transcribes audio during interviews.
+- **Real-Time Audio Transcription**: Records and transcribes audio during interviews using either OpenAI's API or local Whisper.cpp with Mac GPU offloading.
 - **Automatic Question Detection**: Automatically detects when a question is asked.
 - **Detailed Technical Answers**: Generates technical answers using GPT-4o.
 - **Answer Popups**: Displays answers in popups for easy consultation during the interview.
 - **Screenshot Functionality**: Allows capturing, saving, and sharing screenshots of the interview.
 - **Conversation Saving**: Saves the entire conversation in JSON format.
+- **Local Speech-to-Text**: Supports local speech-to-text inference using Whisper.cpp with Mac GPU offloading.
 
 ## Requirements
 
 - Python 3.8 or higher
 - OpenAI API key (to use GPT-4o)
-- Dependencies listed in `requirements.txt`
+- Dependencies listed in `pyproject.toml`
+- For local speech-to-text: Mac with GPU support
 
 ## Installation
 
 1. Clone the repository or download the files:
-   ```
+   ```bash
    git clone https://github.com/your-username/intervista-assistant.git
    cd intervista-assistant
    ```

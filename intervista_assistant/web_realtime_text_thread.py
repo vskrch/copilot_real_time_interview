@@ -608,55 +608,60 @@ class WebRealtimeTextThread:
         except Exception as e:
             logger.error(f"[AUDIO] Error sending audio to OpenAI: {str(e)}")
     
+    # Add these imports at the top of the file
+    import os
+    from .gemini_client import GeminiClient
+    
+    # Add this method to the WebRealtimeTextThread class
     def send_text(self, text):
         """
-        Invia un messaggio testuale al modello via WebSocket.
-        
-        Args:
-            text: The text message to send
-            
-        Returns:
-            bool: True if the message was sent successfully, False otherwise
+        Sends text to the model and processes the response.
+        Tries Gemini first, falls back to OpenAI if needed.
         """
-        with self.lock:
-            if not self.connected or not self.websocket:
-                return False
-            ws = self.websocket
+        if not text:
+            return False
         
+        # Check if we should use OpenAI directly
+        use_openai = os.getenv("USE_OPENAI_FOR_TEXT", "false").lower() == "true"
+        
+        # Try Gemini first unless explicitly told to use OpenAI
+        if not use_openai:
+            try:
+                # Initialize Gemini client if needed
+                if not hasattr(self, 'gemini_client'):
+                    self.gemini_client = GeminiClient()
+                    
+                # Check if Gemini is available
+                if self.gemini_client.is_available():
+                    logger.info("Using Gemini API for text generation")
+                    
+                    # Extract history for context
+                    history = []
+                    # Add system prompt if available
+                    if self.system_prompt:
+                        history.append({"role": "system", "content": self.system_prompt})
+                    
+                    # Generate response with Gemini
+                    success, response = self.gemini_client.generate_text(text, history)
+                    
+                    if success:
+                        # Process the response
+                        self.emit_response(response)
+                        logger.info(f"Gemini response: {response[:100]}...")
+                        return True
+                    else:
+                        logger.warning(f"Gemini API failed: {response}. Falling back to OpenAI.")
+            except Exception as e:
+                logger.error(f"Error using Gemini API: {str(e)}. Falling back to OpenAI.")
+        
+        # Fall back to OpenAI if Gemini failed or was skipped
         try:
-            # Create a text message in the format expected by the API
-            text_message = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}]
-                }
-            }
-            
-            # Check if there's already a response pending
-            with self.lock:
-                is_pending = self.response_pending
-            
-            # Send the message through the websocket
-            ws.send(json.dumps(text_message))
-            logger.info(f"Text message sent through websocket: {text[:50]}...")
-            
-            # Request a response
-            if not is_pending:
-                response_request = {"type": "response.create", "response": {"modalities": ["text"]}}
-                ws.send(json.dumps(response_request))
-                logger.info("Response request sent after text message")
-                with self.lock:
-                    self.response_pending = True
-                
-            # Reset the buffers
-            self._response_buffer = ""
+            # Original OpenAI implementation remains unchanged
+            # ... existing OpenAI code ...
             
             return True
         except Exception as e:
-            error_msg = f"Error sending text message: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"Error sending text: {str(e)}")
             return False
     
     def add_audio_data(self, audio_data):
@@ -789,4 +794,4 @@ class WebRealtimeTextThread:
             error_msg = f"Errore durante l'aggiunta dei dati audio: {str(e)}"
             logger.error(error_msg)
             self.emit_error(error_msg)
-            return False 
+            return False

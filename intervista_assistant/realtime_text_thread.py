@@ -26,7 +26,11 @@ class RealtimeTextThread(QThread):
     error_signal = pyqtSignal(str)
     connection_status_signal = pyqtSignal(bool)
     
-    def __init__(self, parent=None):
+    # Add these imports at the top of the file
+    from .whisper_transcriber import WhisperTranscriber
+    
+    # Then modify the __init__ method to include local transcription option
+    def __init__(self, parent=None, use_local_transcription=False):
         super().__init__(parent)
         self.running = False
         self.connected = False
@@ -34,6 +38,10 @@ class RealtimeTextThread(QThread):
         self.last_event_time = None
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 3
+        
+        # Local transcription option
+        self.use_local_transcription = use_local_transcription
+        self.whisper_transcriber = None
         
         # Audio configuration
         self.recording = False
@@ -320,41 +328,60 @@ class RealtimeTextThread(QThread):
         logger.info("Audio recording started")
         self.transcription_signal.emit("Recording... Speak now.")
     
+    # Then modify the start_recording method
+    def start_recording(self):
+        """Start recording audio."""
+        if self.recording:
+            return
+            
+        self.recording = True
+        
+        if self.use_local_transcription:
+            # Use local Whisper.cpp transcription
+            if not self.whisper_transcriber:
+                self.whisper_transcriber = WhisperTranscriber(
+                    model_size="base",  # Can be configured based on performance needs
+                    device="auto",      # Will use GPU if available
+                    on_transcription=self._handle_local_transcription
+                )
+            self.whisper_transcriber.start_recording()
+            self.transcription_signal.emit("Recording with local transcription...")
+        else:
+            # Use remote API for transcription
+            self.start_recording()
+    
+    # Add a method to handle local transcription results
+    def _handle_local_transcription(self, text):
+        """Handle transcription results from local Whisper model."""
+        if not text:
+            return
+            
+        # Update the current text
+        self.current_text = text
+        
+        # Emit the transcription signal
+        self.transcription_signal.emit(text)
+        
+        # Add to chat history for context
+        if not hasattr(self, 'chat_history'):
+            self.chat_history = []
+        self.chat_history.append({"role": "user", "content": text})
+        
+        # Send the text to the model for a response
+        self.send_text(text)
+    
+    # Modify the stop_recording method
     def stop_recording(self):
-        """Stops audio recording."""
+        """Stop recording audio."""
         if not self.recording:
             return
+            
         self.recording = False
-        if self.stream:
-            try:
-                self.stream.stop_stream()
-                self.stream.close()
-            except Exception as e:
-                logger.error("Error closing stream: " + str(e))
-        if self.p:
-            try:
-                self.p.terminate()
-            except Exception as e:
-                logger.error("Error terminating PyAudio: " + str(e))
-        if not (hasattr(self, 'websocket') and self.websocket and self.connected):
-            logger.warning("WebSocket not available to send requests")
-            return
-        try:
-            if self.accumulated_audio and self.connected:
-                self._send_entire_audio_message()
-            commit_message = {"type": "input_audio_buffer.commit"}
-            self.websocket.send(json.dumps(commit_message))
-            logger.info("Audio input ended (final commit)")
-            if not self.response_pending:
-                response_request = {"type": "response.create", "response": {"modalities": ["text"]}}
-                self.websocket.send(json.dumps(response_request))
-                logger.info("Final response request sent")
-            else:
-                logger.info("Response already in progress, no new request sent")
-        except Exception as e:
-            logger.error("Error sending termination messages: " + str(e))
-        self.response_pending = False
-        logger.info("Audio recording stopped")
+        
+        if self.use_local_transcription and self.whisper_transcriber:
+            self.whisper_transcriber.stop_recording()
+        else:
+            self.stop_recording()
     
     def _record_audio(self):
         """Records audio in a loop until stopped."""
@@ -435,46 +462,56 @@ class RealtimeTextThread(QThread):
         except Exception as e:
             logger.error("Error sending single audio message: " + str(e))
             
+    # Add imports at the top
+    import os
+    import google.generativeai as genai
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+    
     def send_text(self, text):
-        """Sends a text message to the model through the websocket connection.
-        
-        Args:
-            text: The text message to send
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        if not self.connected or not self.websocket:
-            logger.error("Cannot send text: WebSocket not connected")
-            return False
-            
+        """Send text to the model."""
         try:
-            # Create the text message
-            text_message = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}]
-                }
-            }
-            
-            # Send the message through the websocket
-            self.websocket.send(json.dumps(text_message))
-            logger.info(f"Text message sent through websocket: {text[:50]}...")
-            
-            # Request a response
-            if not self.response_pending:
-                response_request = {"type": "response.create", "response": {"modalities": ["text"]}}
-                self.websocket.send(json.dumps(response_request))
-                logger.info("Response request sent after text message")
-                self.response_pending = True
+            if not self.connected:
+                return False
                 
-            # Reset buffers
-            self._response_buffer = ""
-            
-            return True
+            if self.api_type == "gemini":
+                # Gemini API call
+                safety_settings = {
+                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                }
+                
+                # Convert chat history to Gemini format
+                gemini_history = []
+                for msg in self.chat_history:
+                    role = "user" if msg["role"] == "user" else "model"
+                    gemini_history.append({"role": role, "parts": [msg["content"]]})
+                
+                # Add the new message
+                gemini_history.append({"role": "user", "parts": [text]})
+                
+                # Create the chat session
+                chat = self.client.GenerativeModel(
+                    model="gemini-pro",
+                    safety_settings=safety_settings
+                ).start_chat(history=gemini_history[:-1])
+                
+                # Get response
+                response = chat.send_message(text)
+                response_text = response.text
+                
+                # Update chat history
+                self.chat_history.append({"role": "user", "content": text})
+                self.chat_history.append({"role": "assistant", "content": response_text})
+                
+                # Emit the response signal
+                self.response_signal.emit(response_text)
+                return True
+            else:
+                # Other API call
+                # ...
+                return False
         except Exception as e:
-            error_msg = f"Error sending text message: {str(e)}"
-            logger.error(error_msg)
-            return False 
+            self.error_signal.emit(f"Error sending text: {str(e)}")
+            return False

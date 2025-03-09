@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from .realtime_text_thread import RealtimeTextThread
 from .utils import ScreenshotManager
 from .ui import IntervistaAssistantUI
+from .whisper_transcriber import WhisperTranscriber  # Add this import
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, 
@@ -41,55 +42,39 @@ class IntervistaAssistant(QMainWindow):
         self.shutdown_in_progress = False
         self.screenshot_manager = ScreenshotManager()
         
-        # Initialize the UI using the IntervistaAssistantUI class
-        self.central_widget = IntervistaAssistantUI(self)
-        self.setCentralWidget(self.central_widget)
+        # Enhanced configuration for local transcription
+        self.use_local_transcription = os.getenv("USE_LOCAL_TRANSCRIPTION", "false").lower() == "true"
+        self.whisper_model_size = os.getenv("WHISPER_MODEL_SIZE", "base")
+        self.whisper_device = os.getenv("WHISPER_DEVICE", "auto")
+        self.whisper_compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
         
-        # Get references to the UI widgets
+        # Log transcription configuration
+        if self.use_local_transcription:
+            logger.info(f"Using local transcription with Whisper.cpp: model={self.whisper_model_size}, device={self.whisper_device}, compute_type={self.whisper_compute_type}")
+        else:
+            logger.info("Using OpenAI API for transcription")
+        
+        # Initialize the UI using the IntervistaAssistantUI class
+        self.ui = IntervistaAssistantUI(self)
+        self.central_widget = self.ui.central_widget
         self.transcription_text = self.central_widget.transcription_text
         self.response_text = self.central_widget.response_text
         self.record_button = self.central_widget.record_button
-        self.clear_button = self.central_widget.clear_button
-        self.analyze_screenshot_button = self.central_widget.analyze_screenshot_button
+        self.screenshot_button = self.central_widget.screenshot_button
+        self.share_button = self.central_widget.share_button
+        self.think_button = self.central_widget.think_button
         self.save_button = self.central_widget.save_button
-        self.screen_selector_combo = self.central_widget.screen_selector_combo
         
-        # Connect signals from the UI to handlers
-        self.central_widget.record_button.clicked.connect(self.toggle_recording)
-        self.central_widget.clear_button.clicked.connect(self.clear_text)
-        self.central_widget.save_button.clicked.connect(self.save_conversation)
-        self.central_widget.analyze_screenshot_button.clicked.connect(self.take_and_send_screenshot)
-        self.central_widget.think_button.clicked.connect(self.show_think_dialog)
-        
-        # Connect text input signals
-        self.central_widget.send_button.clicked.connect(self.send_text_message)
-        self.central_widget.text_input_field.returnPressed.connect(self.send_text_message)
-        
-        # Populate the screen selector combo box
-        self._populate_screen_selector()
+        # Set up the UI connections
+        self.setup_connections()
         
         # Set window properties
-        self.setWindowTitle("Intervista AI Assistant")
-        self.resize(1280, 720)
+        self.setWindowTitle("Intervista Assistant")
+        self.resize(1200, 800)
         
-    def _populate_screen_selector(self):
-        """Popola il menu a tendina con i monitor disponibili."""
-        try:
-            # Aggiungi opzione per schermo intero
-            self.screen_selector_combo.addItem("Schermo Intero", None)
-            
-            # Ottieni i monitor disponibili
-            monitors = self.screenshot_manager.get_monitors()
-            
-            # Aggiungi le opzioni per ogni monitor
-            for i, monitor in enumerate(monitors):
-                display_text = f"Monitor {i+1}: {monitor['width']}x{monitor['height']}"
-                self.screen_selector_combo.addItem(display_text, i)
-                
-            logger.info(f"Menu a tendina popolato con {len(monitors)} monitor")
-        except Exception as e:
-            logger.error(f"Errore durante il popolamento del menu a tendina: {str(e)}")
-        
+        # Show the window
+        self.show()
+
     def toggle_recording(self):
         """Toggle the connection to the model and immediately start recording."""
         if not self.recording:
@@ -101,7 +86,17 @@ class IntervistaAssistant(QMainWindow):
             self.central_widget.text_input_field.setEnabled(False)
             self.central_widget.send_button.setEnabled(False)
             
-            self.text_thread = RealtimeTextThread()
+            # Create the text thread with local transcription configuration
+            self.text_thread = RealtimeTextThread(
+                use_local_transcription=self.use_local_transcription,
+                whisper_config={
+                    "model_size": self.whisper_model_size,
+                    "device": self.whisper_device,
+                    "compute_type": self.whisper_compute_type
+                } if self.use_local_transcription else None
+            )
+            
+            # Connect signals
             self.text_thread.transcription_signal.connect(self.update_transcription)
             self.text_thread.response_signal.connect(self.update_response)
             self.text_thread.error_signal.connect(self.show_error)
@@ -109,9 +104,17 @@ class IntervistaAssistant(QMainWindow):
             self.text_thread.finished.connect(self.recording_finished)
             self.text_thread.start()
             
+            # Show appropriate message based on transcription mode
+            if self.use_local_transcription:
+                self.transcription_text.setText("Initializing local transcription with Whisper.cpp...")
+                self.transcription_text.append(f"Model: {self.whisper_model_size}, Device: {self.whisper_device}")
+            else:
+                self.transcription_text.setText("Connecting to OpenAI API...")
+            
             # Automatically start recording immediately after session initialization
             while not self.text_thread.connected:
                 time.sleep(0.1)
+                QApplication.processEvents()  # Keep UI responsive
             self.text_thread.start_recording()
         else:
             if self.shutdown_in_progress:
@@ -327,11 +330,7 @@ class IntervistaAssistant(QMainWindow):
             self.chat_history[-1]["content"] = f"{previous_content}\n--- Response at {current_time} ---\n{text}"
     
     def take_and_send_screenshot(self):
-        """Capture screenshot and send it to the OpenAI model.
-        
-        Uses gpt-4o to analyze the image and then forwards the response to the realtime thread.
-        This creates a seamless conversation flow even though realtime API doesn't support images.
-        """
+        """Capture screenshot and send it to the OpenAI model."""
         try:
             # Check if realtime thread is active
             if not self.recording or not self.text_thread or not self.text_thread.connected:
@@ -622,20 +621,55 @@ class IntervistaAssistant(QMainWindow):
             self.central_widget.text_input_field.clear()
 
 class ImageAnalysisWorker(QObject):
-    """Worker class per l'analisi asincrona delle immagini."""
+    """Worker class for asynchronous image analysis."""
     
-    # Segnali per comunicare con l'UI
-    analysisComplete = pyqtSignal(str)  # Emesso quando l'analisi è completata
-    error = pyqtSignal(str)  # Emesso in caso di errore
+    analysisComplete = pyqtSignal(str)
+    error = pyqtSignal(str)
     
-    def __init__(self, client, messages, screenshot_path):
+    def __init__(self, client, messages, screenshot_path, use_local_transcription=False):
         super().__init__()
         self.client = client
         self.messages = messages
         self.screenshot_path = screenshot_path
+        self.use_local_transcription = use_local_transcription
         self.base64_image = None
-        
-    @pyqtSlot()
+    
+    def analyze(self):
+        """Analyze the image using the appropriate API."""
+        try:
+            # Read and encode the image
+            with open(self.screenshot_path, "rb") as image_file:
+                self.base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+            
+            # Update the image URL in the messages
+            image_url = f"data:image/jpeg;base64,{self.base64_image}"
+            for i, message in enumerate(self.messages):
+                if message["role"] == "user" and isinstance(message["content"], list):
+                    for j, content in enumerate(message["content"]):
+                        if content.get("type") == "image_url":
+                            self.messages[i]["content"][j]["image_url"]["url"] = image_url
+            
+            # Use OpenAI's API for image analysis (even with local transcription)
+            # Local image analysis would require a separate implementation
+            logger.info("Sending image to OpenAI for analysis")
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=self.messages,
+                max_tokens=4000
+            )
+            
+            # Extract the response text
+            assistant_response = response.choices[0].message.content
+            logger.info(f"Received response from OpenAI: {assistant_response[:100]}...")
+            
+            # Emit the completion signal
+            self.analysisComplete.emit(assistant_response)
+            
+        except Exception as e:
+            error_msg = f"Error analyzing image: {str(e)}"
+            logger.error(error_msg)
+            self.error.emit(error_msg)
+    
     def analyze(self):
         """Esegue l'analisi dell'immagine in background."""
         try:
@@ -762,4 +796,4 @@ class ThinkWorker(QObject):
             
         except Exception as e:
             logger.error(f"Error generating solution: {e}")
-            raise 
+            raise
