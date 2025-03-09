@@ -161,6 +161,7 @@ const apiClient = {
    */
   async takeScreenshot(sessionId: string, screenId: string): Promise<boolean> {
     try {
+      console.log(`Taking screenshot for session ${sessionId}, screen ${screenId}`);
       const response = await fetch(`${API_BASE_URL}/sessions/screenshot`, {
         method: 'POST',
         headers: {
@@ -168,15 +169,18 @@ const apiClient = {
         },
         body: JSON.stringify({ 
           session_id: sessionId,
-          monitor_index: parseInt(screenId, 10)
+          monitor_index: screenId === "fullscreen" ? null : parseInt(screenId, 10)
         }),
       });
       
       if (!response.ok) {
-        throw new Error(`Error capturing screenshot: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        console.error(`Error response from server:`, errorData);
+        throw new Error(`Error capturing screenshot: ${response.status} ${response.statusText}`);
       }
       
       const data = await response.json() as ApiResponse;
+      console.log("Screenshot API response:", data);
       return data.success;
     } catch (error) {
       console.error('Error capturing screenshot:', error);
