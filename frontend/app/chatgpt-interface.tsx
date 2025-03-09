@@ -31,8 +31,9 @@ export default function ChatGPTInterface() {
   const [isCapturingScreen, setIsCapturingScreen] = useState(false)
   const [isRecording, setIsRecording] = useState<boolean>(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [audioControl, setAudioControl] = useState<AudioStreamControl | null>(null)
   const [isStreamError, setIsStreamError] = useState<boolean>(false)
+  // Add missing state for screenshot response
+  const [awaitingScreenshotResponse, setAwaitingScreenshotResponse] = useState<boolean>(false)
 
   // State to keep track of the SSE cleanup function
   const [cleanupStream, setCleanupStream] = useState<(() => void) | null>(null);
@@ -43,6 +44,9 @@ export default function ChatGPTInterface() {
   // Ref for EventSource
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  // Initialize audio control with the useAudioStream hook
+  const audioStreamControl = useAudioStream(sessionId || '');
+  
   // Callback to handle transcription updates
   const handleTranscription = useCallback((update: TranscriptionUpdate) => {
     console.log(`Received transcription update: ${update.text}`);
@@ -556,6 +560,15 @@ export default function ChatGPTInterface() {
           <Camera className="h-4 w-4" />
           {isCapturingScreen && <span className="ml-2">Capturing...</span>}
         </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={toggleRecording}
+          disabled={!isSessionActive}
+          title={isRecording ? "Stop recording" : "Start recording"}
+        >
+          {isRecording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        </Button>
       </div>
     );
   };
@@ -653,51 +666,61 @@ export default function ChatGPTInterface() {
   )
 }
 
-// In the polling function, add logic to handle screenshot responses
+// Effect to poll for updates (moved inside the component)
 useEffect(() => {
   const pollUpdates = async () => {
     if (!sessionId || !isSessionActive) return;
     
     try {
-      // Check for new responses
-      if (responseUpdates && responseUpdates.length > 0) {
-        // Process each response update
-        responseUpdates.forEach(update => {
-          // Check if we're waiting for a screenshot response
-          if (awaitingScreenshotResponse) {
+      // Check if we're waiting for a screenshot response
+      if (awaitingScreenshotResponse) {
+        // Get session status to check for new responses
+        const status = await apiClient.getSessionStatus(sessionId);
+        
+        if (status && status.response_updates && status.response_updates.length > 0) {
+          // Process each response update
+          status.response_updates.forEach(update => {
             // Remove any waiting messages
             setMessages(prev => prev.filter(m => !m.content.includes('Analyzing the screenshot')));
             setAwaitingScreenshotResponse(false);
+            
+            // Add the new message
+            setMessages(prev => {
+              // Check if this is a new message or an update to the last assistant message
+              const lastMessage = prev[prev.length - 1];
+              if (lastMessage && lastMessage.role === 'assistant' && 
+                  !lastMessage.content.includes('Analyzing the screenshot')) {
+                // Update the existing message
+                return [
+                  ...prev.slice(0, -1),
+                  { ...lastMessage, content: update }
+                ];
+              } else {
+                // Add as a new message
+                return [...prev, {
+                  id: `response-${Date.now()}`,
+                  role: 'assistant',
+                  content: update,
+                  timestamp: new Date().toISOString()
+                }];
+              }
+            });
           }
-          
-          // Add the new message
-          setMessages(prev => {
-            // Check if this is a new message or an update to the last assistant message
-            const lastMessage = prev[prev.length - 1];
-            if (lastMessage && lastMessage.role === 'assistant' && 
-                !lastMessage.content.includes('Analyzing the screenshot')) {
-              // Update the existing message
-              return [
-                ...prev.slice(0, -1),
-                { ...lastMessage, content: update }
-              ];
-            } else {
-              // Add as a new message
-              return [...prev, {
-                id: `response-${Date.now()}`,
-                role: 'assistant',
-                content: update,
-                timestamp: new Date().toISOString()
-              }];
-            }
-          });
-        });
+        }
       }
-      
-      // The response will be handled via SSE events
     } catch (error) {
       console.error('Error polling updates:', error);
     }
+  };
+  
+  // Set up polling interval if we're waiting for a screenshot response
+  let interval: NodeJS.Timeout | null = null;
+  if (awaitingScreenshotResponse) {
+    interval = setInterval(pollUpdates, 2000); // Poll every 2 seconds
+  }
+  
+  return () => {
+    if (interval) clearInterval(interval);
   };
 }, [sessionId, isSessionActive, awaitingScreenshotResponse]);
 
