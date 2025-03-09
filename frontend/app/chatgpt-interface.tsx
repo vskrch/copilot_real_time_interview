@@ -2,7 +2,8 @@
 import { Play, Square, Trash2, Save, Brain, Camera, Bug, Mic, MicOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+// Remove this line if you're not using these components
+// import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useState, useEffect, useRef, useCallback } from "react"
 import { formatMarkdown } from "@/utils/formatMessage"
 
@@ -489,8 +490,7 @@ export default function ChatGPTInterface() {
     setMessages([]);
   };
 
-  // Initialize audio control with the useAudioStream hook
-  const audioStreamControl = useAudioStream(sessionId || '');
+
   
   // Effect to monitor sessionId changes and update recording state
   useEffect(() => {
