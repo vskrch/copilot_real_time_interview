@@ -21,6 +21,7 @@ import { getAvailableScreens, captureScreenshot, ScreenInfo } from "@/utils/scre
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
 console.log("API base URL:", API_BASE_URL);
 
+// Modify the component to use the session status from Socket.IO
 export default function ChatGPTInterface() {
   const [isSessionActive, setIsSessionActive] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
@@ -46,7 +47,26 @@ export default function ChatGPTInterface() {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Initialize audio control with the useAudioStream hook
-  const audioStreamControl = useAudioStream(sessionId || '');
+  // Update this line to include sessionStatus in the destructuring
+  const { start, stop, isActive, sessionStatus } = useAudioStream(sessionId || '');
+  
+  // Use the session status from Socket.IO
+  useEffect(() => {
+    if (sessionStatus) {
+      // Update UI based on session status
+      setIsSessionActive(sessionStatus.recording);
+      setIsConnected(sessionStatus.connected);
+      
+      // Handle any status changes
+      if (sessionStatus.status_change) {
+        console.log(`Session status change: ${sessionStatus.status_change}`);
+        // Handle specific status changes if needed
+      }
+    }
+  }, [sessionStatus]);
+  
+  // Remove the polling interval for session status
+  // Delete or comment out the existing polling code
   
   // Callback to handle transcription updates
   const handleTranscription = useCallback((update: TranscriptionUpdate) => {
@@ -268,7 +288,7 @@ export default function ChatGPTInterface() {
       
       // Stop audio recording if active
       if (isRecording) {
-        audioStreamControl.stop();
+        stop();
         setIsRecording(false);
       }
       
@@ -312,20 +332,15 @@ export default function ChatGPTInterface() {
         // Automatically start audio recording
         console.log("Automatically starting audio recording...");
         
-        // Ensure audioStreamControl is properly initialized
-        if (audioStreamControl) {
-          try {
-            audioStreamControl.start();
-            console.log("Audio recording started successfully");
-            setIsRecording(true);
-          } catch (error) {
-            console.error("Error starting audio recording:", error);
-            alert("There was a problem activating the microphone. Please check your browser permissions.");
-          }
-        } else {
-          console.error("audioStreamControl not properly initialized");
+        // Replace this block with the destructured functions
+        try {
+          start(); // Use the destructured start function
+          console.log("Audio recording started successfully");
+          setIsRecording(true);
+        } catch (error) {
+          console.error("Error starting audio recording:", error);
+          alert("There was a problem activating the microphone. Please check your browser permissions.");
         }
-        
       } catch (error) {
         console.error("Error starting session:", error);
       }
@@ -495,17 +510,17 @@ export default function ChatGPTInterface() {
   // Effect to monitor sessionId changes and update recording state
   useEffect(() => {
     console.log(`sessionId updated: ${sessionId}`);
-    // If the session is active and isRecording is true, but audioStreamControl is not active,
+    // If the session is active and isRecording is true, but audio is not active,
     // try to restart the recording
-    if (isSessionActive && isRecording && audioStreamControl && !audioStreamControl.isActive) {
+    if (isSessionActive && isRecording && !isActive) {
       console.log('Attempting to reactivate audio recording after sessionId change');
       try {
-        audioStreamControl.start();
+        start();
       } catch (error) {
         console.error('Error reactivating audio recording:', error);
       }
     }
-  }, [sessionId, isSessionActive, isRecording, audioStreamControl]);
+  }, [sessionId, isSessionActive, isRecording, isActive, start]);
 
   const toggleRecording = () => {
     if (!isSessionActive || !sessionId) {
@@ -513,18 +528,18 @@ export default function ChatGPTInterface() {
       return;
     }
     
-    // Use audioStreamControl directly instead of creating it conditionally
+    // Use start/stop functions directly instead of through audioStreamControl
     if (!isRecording) {
       console.log('Activating microphone...');
       try {
-        audioStreamControl.start();
+        start();
       } catch (error) {
         console.error('Error activating microphone:', error);
         alert('There was a problem activating the microphone. Make sure you have given the necessary permissions.');
         return;
       }
     } else {
-      audioStreamControl.stop();
+      stop();
       console.log('Microphone deactivated.');
     }
     

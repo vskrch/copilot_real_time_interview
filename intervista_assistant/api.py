@@ -14,6 +14,7 @@ import threading
 import numpy as np
 from datetime import datetime
 from functools import wraps
+from .gemini_client import GeminiClient
 
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
@@ -21,6 +22,7 @@ from flask_socketio import SocketIO, emit
 
 from openai import OpenAI
 from dotenv import load_dotenv  # Add dotenv import
+gemini_client = GeminiClient()
 
 # Import the thread for real-time API communication with OpenAI
 try:
@@ -71,7 +73,17 @@ class SessionManager:
     Manages a conversation session, including communication with OpenAI.
     Each session is associated with a frontend client.
     """
-    
+    def update_status(self, status_change=None):
+        """Updates and emits the current session status."""
+        status = self.get_status()
+        if status_change:
+            status["status_change"] = status_change
+        
+        # Emit the status update via Socket.IO to the specific room (session_id)
+        socketio.emit('session_status_update', status, room=self.session_id)
+        
+        return status
+
     def __init__(self, session_id):
         """Initializes a new session."""
         self.session_id = session_id
@@ -87,18 +99,22 @@ class SessionManager:
         self.connection_updates = []
     
     def start_session(self):
-        """
-        Start the session by initializing the communication with the OpenAI API.
+        """Starts the session and initializes resources."""
+        logger.info(f"Starting session {self.session_id}")
         
-        Returns:
-            tuple: (success, error_message)
-        """
         try:
+            # Check if already recording
             if self.recording:
-                logger.info(f"Session {self.session_id} already started")
-                return True, None
+                return True
                 
-            logger.info(f"Starting session {self.session_id}")
+            # Initialize the appropriate text thread based on API preference
+            if self.api_preference == 'gemini' and gemini_client.is_available():
+                logger.info(f"Using Gemini API for session {self.session_id}")
+                # Set environment variable to use Gemini
+                os.environ['USE_OPENAI_FOR_TEXT'] = 'false'
+                os.environ['USE_GEMINI_FOR_TEXT'] = 'true'
+            else:
+                logger.info(f"Using default API for session {self.session_id}")
             
             # Create a new WebRealtimeTextThread instance
             callbacks = {
@@ -991,7 +1007,78 @@ def save_conversation():
 #
 # Socket.IO handlers
 #
+@socketio.on('set_api_preference')
+def handle_api_preference(data):
+    """Handle client preference for AI API provider."""
+    session_id = data.get('session_id')
+    preference = data.get('preference')
+    
+    if not session_id or session_id not in active_sessions:
+        return {'success': False, 'error': 'Invalid session ID'}
+    
+    session = active_sessions[session_id]
+    
+    logger.info(f"Setting API preference for session {session_id} to {preference}")
+    
+    # Store the preference in the session
+    session.api_preference = preference
+    
+    # If using Gemini, ensure the client is initialized
+    if preference == 'gemini' and not gemini_client.is_available():
+        gemini_api_key = os.getenv('GEMINI_API_KEY')
+        if gemini_api_key:
+            gemini_client.initialize(gemini_api_key)
+            logger.info("Gemini client initialized for session")
+        else:
+            logger.error("Gemini API key not found in environment")
+            return {'success': False, 'error': 'Gemini API key not configured'}
+    
+    return {'success': True}
 
+@socketio.on('audio_data_gemini')
+def handle_audio_data_gemini(data):
+    """Handle audio data specifically for Gemini API processing."""
+    session_id = data.get('session_id')
+    audio_data_base64 = data.get('audio_data')
+    sample_rate = data.get('sample_rate', 16000)
+    encoding = data.get('encoding', 'LINEAR16')
+    
+    if not session_id or session_id not in active_sessions:
+        return {'success': False, 'error': 'Invalid session ID'}
+    
+    session = active_sessions[session_id]
+    
+    try:
+        # Decode base64 audio data
+        audio_bytes = base64.b64decode(audio_data_base64)
+        
+        logger.info(f"Received audio data for Gemini processing: {len(audio_bytes)} bytes")
+        
+        # Process with Gemini if available, otherwise fall back to default
+        if hasattr(session, 'api_preference') and session.api_preference == 'gemini' and gemini_client.is_available():
+            # Send to Gemini for processing
+            result = gemini_client.process_audio(audio_bytes, sample_rate, encoding)
+            
+            if result and 'transcription' in result:
+                # Handle the transcription result
+                session.handle_transcription(result['transcription'])
+                
+                # If there's a response from Gemini, handle it
+                if 'response' in result:
+                    session.handle_response(result['response'])
+                
+                return {'received': True, 'samples': len(audio_bytes) // 2}
+            else:
+                logger.error("Gemini processing failed or returned no transcription")
+                return {'received': True, 'error': 'Gemini processing failed'}
+        else:
+            # Fall back to default audio processing
+            logger.info("Falling back to default audio processing")
+            return handle_audio_data(session_id, audio_bytes)
+            
+    except Exception as e:
+        logger.error(f"Error processing audio data with Gemini: {str(e)}")
+        return {'received': False, 'error': str(e)}
 @socketio.on('connect')
 def handle_connect():
     """Handles a Socket.IO client connection."""

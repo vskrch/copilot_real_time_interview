@@ -4,10 +4,14 @@ Provides a wrapper around Google's Generative AI API.
 """
 import os
 import logging
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import base64
+import json
 from typing import List, Dict, Any, Optional, Tuple
 
 # Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class GeminiClient:
@@ -15,27 +19,151 @@ class GeminiClient:
     
     def __init__(self):
         """Initialize the Gemini client."""
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        self.client = None
         self.initialized = False
+        self.api_key = None
+        self.model = None
         
-        if self.api_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                self.client = genai
-                self.initialized = True
-                logger.info("Gemini API client initialized successfully")
-            except ImportError:
-                logger.error("Failed to import google.generativeai. Make sure it's installed.")
-            except Exception as e:
-                logger.error(f"Error initializing Gemini client: {str(e)}")
-        else:
-            logger.warning("No Gemini API key found. Gemini features will be unavailable.")
+    def initialize(self, api_key=None):
+        """Initialize the Gemini API with the provided key."""
+        try:
+            # Use provided key or get from environment
+            self.api_key = api_key or os.getenv('GEMINI_API_KEY')
+            
+            if not self.api_key:
+                logger.error("No Gemini API key provided")
+                return False
+                
+            # Configure the Gemini API
+            genai.configure(api_key=self.api_key)
+            
+            # Set up the model
+            self.model = genai.GenerativeModel(
+                model_name="gemini-1.5-pro",
+                generation_config={
+                    "temperature": 0.4,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                },
+                safety_settings={
+                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                }
+            )
+            
+            self.initialized = True
+            logger.info("Gemini API initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error initializing Gemini API: {str(e)}")
+            self.initialized = False
+            return False
     
     def is_available(self) -> bool:
         """Check if the Gemini API is available."""
         return self.initialized and self.api_key is not None
+    
+    def process_audio(self, audio_bytes, sample_rate=16000, encoding="LINEAR16"):
+        """
+        Process audio data with Gemini API.
+        
+        Args:
+            audio_bytes: Raw audio bytes
+            sample_rate: Audio sample rate in Hz
+            encoding: Audio encoding format
+            
+        Returns:
+            Dictionary with transcription and optional response
+        """
+        if not self.is_available():
+            logger.error("Gemini API not initialized")
+            return None
+            
+        try:
+            # Convert audio bytes to base64 for API
+            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+            
+            # Create a multimodal content object with audio
+            content = [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": "audio/wav",
+                                "data": audio_b64
+                            }
+                        }
+                    ]
+                }
+            ]
+            
+            # Send to Gemini for processing
+            response = self.model.generate_content(content)
+            
+            # Extract the transcription and response
+            if response and response.text:
+                # Parse the response - Gemini typically returns both transcription and analysis
+                result = {
+                    "transcription": response.text,
+                    "response": None  # Will be filled if there's a separate response
+                }
+                
+                # Check if the response contains a structured format with separate transcription and response
+                try:
+                    parsed = json.loads(response.text)
+                    if isinstance(parsed, dict) and "transcription" in parsed:
+                        result["transcription"] = parsed["transcription"]
+                        if "response" in parsed:
+                            result["response"] = parsed["response"]
+                except:
+                    # Not JSON, use the full text as transcription
+                    pass
+                    
+                logger.info(f"Gemini processed audio successfully: {len(result['transcription'])} chars")
+                return result
+            else:
+                logger.error("Gemini returned empty response")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error processing audio with Gemini: {str(e)}")
+            return None
+            
+    def process_text(self, text, session_history=None):
+        """
+        Process text with Gemini API.
+        
+        Args:
+            text: Text to process
+            session_history: Optional conversation history
+            
+        Returns:
+            Response text from Gemini
+        """
+        if not self.is_available():
+            logger.error("Gemini API not initialized")
+            return None
+            
+        try:
+            # Create a chat session
+            chat = self.model.start_chat(history=session_history or [])
+            
+            # Send the message
+            response = chat.send_message(text)
+            
+            if response and response.text:
+                logger.info(f"Gemini processed text successfully: {len(response.text)} chars")
+                return response.text
+            else:
+                logger.error("Gemini returned empty text response")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error processing text with Gemini: {str(e)}")
+            return None
     
     def analyze_image(self, image_data: str, prompt: str) -> Tuple[bool, str]:
         """
@@ -52,8 +180,12 @@ class GeminiClient:
             return False, "Gemini API not available"
         
         try:
-            # Create the model - use the latest Gemini vision model
-            model = self.client.GenerativeModel('gemini-1.5-pro-vision')
+            # Get the model name from environment variable or use default
+            vision_model = os.getenv("GEMINI_VISION_MODEL", "gemini-pro-vision")
+            logger.info(f"Using Gemini vision model: {vision_model}")
+            
+            # Create the model - use the configured vision model
+            model = self.client.GenerativeModel(vision_model)
             
             # Process the image - handle both base64 strings and raw binary data
             if "base64," in image_data:
