@@ -621,56 +621,45 @@ class WebRealtimeTextThread:
     
     # Add this method to the WebRealtimeTextThread class
     def send_text(self, text):
-        """
-        Sends text to the model and processes the response.
-        Tries Gemini first, falls back to OpenAI if needed.
-        """
+        """Sends text to the model and processes the response using Gemini."""
         if not text:
             return False
         
-        # Check if we should use OpenAI directly
-        use_openai = os.getenv("USE_OPENAI_FOR_TEXT", "false").lower() == "true"
-        
-        # Try Gemini first unless explicitly told to use OpenAI
-        if not use_openai:
-            try:
-                # Initialize Gemini client if needed
-                if not hasattr(self, 'gemini_client'):
-                    self.gemini_client = GeminiClient()
-                    
-                # Check if Gemini is available
-                if self.gemini_client.is_available():
-                    logger.info("Using Gemini API for text generation")
-                    
-                    # Extract history for context
-                    history = []
-                    # Add system prompt if available
-                    if self.system_prompt:
-                        history.append({"role": "system", "content": self.system_prompt})
-                    
-                    # Generate response with Gemini
-                    success, response = self.gemini_client.generate_text(text, history)
-                    
-                    if success:
-                        # Process the response
-                        self.emit_response(response)
-                        logger.info(f"Gemini response: {response[:100]}...")
-                        return True
-                    else:
-                        logger.warning(f"Gemini API failed: {response}. Falling back to OpenAI.")
-            except Exception as e:
-                logger.error(f"Error using Gemini API: {str(e)}. Falling back to OpenAI.")
-        
-        # Fall back to OpenAI if Gemini failed or was skipped
         try:
-            # Original OpenAI implementation remains unchanged
-            # ... existing OpenAI code ...
+            # Initialize Gemini client if needed
+            if not hasattr(self, 'gemini_client'):
+                self.gemini_client = GeminiClient()
+                
+            # Check if Gemini is available
+            if not self.gemini_client.is_available():
+                raise Exception("Gemini API not configured")
             
-            return True
+            logger.info("Using Gemini API for text generation")
+            
+            # Extract history for context
+            history = []
+            for msg in self.chat_history:
+                if msg["role"] != "system":
+                    history.append({
+                        "role": "user" if msg["role"] == "user" else "model",
+                        "parts": [msg["content"]]
+                    })
+            
+            # Process with Gemini
+            response = self.gemini_client.process_text(text, session_history=history)
+            
+            if response:
+                self._call_callback('on_response', response)
+                return True
+            else:
+                raise Exception("No response from Gemini API")
+                
         except Exception as e:
-            logger.error(f"Error sending text: {str(e)}")
+            error_msg = f"Error processing text with Gemini: {str(e)}"
+            logger.error(error_msg)
+            self._call_callback('on_error', error_msg)
             return False
-    
+
     def add_audio_data(self, audio_data):
         """
         Aggiunge dati audio esterni (dalla socket.io) al buffer audio.

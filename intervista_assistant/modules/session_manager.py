@@ -47,54 +47,41 @@ class SessionManager:
         self.error_updates = []
         self.connection_updates = []
     
-    def start_session(self) -> Tuple[bool, Optional[str]]:
+    def start_session(self):
         """Starts the session and initializes resources."""
         logger.info(f"Starting session {self.session_id}")
         
         try:
+            # Check if already recording
             if self.recording:
                 return True, None
             
-            # Initialize the text thread with Gemini
-            if self.gemini_client.is_available():
-                from ..gemini_realtime_thread import GeminiRealtimeThread
-                
-                callbacks = {
-                    'on_transcription': lambda text: self.handle_transcription(text),
-                    'on_response': lambda text: self.handle_response(text),
-                    'on_error': lambda message: self.handle_error(message),
-                    'on_connection_status': lambda connected: self.handle_connection_status(connected)
-                }
-                
-                self.text_thread = GeminiRealtimeThread(callbacks)
-                self.text_thread.start()
-                
-                # Mark as recording
-                self.recording = True
-                self.last_activity = datetime.now()
-                
-                # Wait for connection
-                max_wait = 2
-                wait_interval = 0.1
-                waited = 0
-                
-                while waited < max_wait:
-                    if self.text_thread.connected:
-                        logger.info(f"Gemini connection established after {waited:.1f} seconds")
-                        break
-                    waited += wait_interval
-                    time.sleep(wait_interval)
-                
-                return True, None
-            else:
-                error_msg = "Gemini API not available"
-                logger.error(error_msg)
-                return False, error_msg
-                
+            # Import Gemini thread
+            from ..gemini_realtime_thread import GeminiRealtimeThread
+            
+            # Create callbacks dictionary
+            callbacks = {
+                'on_transcription': self.handle_transcription,
+                'on_response': self.handle_response,
+                'on_error': self.handle_error,
+                'on_connection_status': self.handle_connection_status
+            }
+            
+            # Create and start the Gemini thread
+            self.text_thread = GeminiRealtimeThread(callbacks=callbacks)
+            self.text_thread.start()
+            
+            # Set recording flag
+            self.recording = True
+            
+            # Update status
+            self.update_status("Session started")
+            
+            return True, None
+            
         except Exception as e:
             error_msg = f"Error starting session: {str(e)}"
             logger.error(error_msg)
-            self.handle_error(error_msg)
             return False, error_msg
     
     def end_session(self) -> bool:
@@ -231,3 +218,150 @@ class SessionManager:
             "last_activity": self.last_activity.isoformat(),
             "message_count": len(self.chat_history)
         }
+
+    def start_think_process(self):
+        """
+        Starts an advanced thinking process that generates a summary
+        and a detailed solution based on the conversation.
+        
+        Returns:
+            Tuple[bool, Optional[str]]: (success, error_message)
+        """
+        logger.info(f"Starting think process for session {self.session_id}")
+        
+        try:
+            # Check if we have enough conversation history
+            if not self.chat_history or len(self.chat_history) < 2:
+                error_msg = "Not enough conversation history to analyze"
+                logger.warning(error_msg)
+                return False, error_msg
+            
+            # Start the thinking process in a separate thread
+            threading.Thread(
+                target=self._process_thinking_async,
+                daemon=True
+            ).start()
+            
+            return True, None
+            
+        except Exception as e:
+            error_msg = f"Error starting thinking process: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    def _process_thinking_async(self):
+        """Performs the thinking process asynchronously using Gemini."""
+        try:
+            # First generate a summary
+            self.handle_response("🧠 Analyzing our conversation...", final=False)
+            summary = self._generate_summary()
+            
+            # Notify the user that the summary is ready
+            self.handle_response(f"**CONVERSATION ANALYSIS:**\n\n{summary}", final=False)
+            
+            # Generate a detailed solution based on the summary
+            self.handle_response("🚀 Generating detailed insights...", final=False)
+            solution = self._generate_solution(summary)
+            
+            # Notify the user that the solution is ready
+            self.handle_response(f"**DETAILED SOLUTION:**\n\n{solution}", final=True)
+            
+            logger.info(f"Thinking process completed successfully for session {self.session_id}")
+            
+        except Exception as e:
+            error_message = f"Error in the thinking process: {str(e)}"
+            logger.error(error_message)
+            self.handle_error(error_message)
+
+    def _generate_summary(self):
+        """Generates a summary of the conversation using Gemini API."""
+        try:
+            # Create a summary prompt
+            summary_prompt = """Analyze the conversation history and create a concise summary. 
+            Focus on:
+            1. Key problems or questions discussed
+            2. Important context
+            3. Any programming challenges mentioned
+            4. Current state of the discussion
+            
+            Your summary should be comprehensive but brief, highlighting the most important aspects 
+            that would help solve any programming or logical problems mentioned."""
+            
+            # Format history for Gemini
+            formatted_history = []
+            for msg in self.chat_history:
+                if msg["role"] != "system":
+                    formatted_history.append({
+                        "role": "user" if msg["role"] == "user" else "model",
+                        "parts": [msg["content"]]
+                    })
+            
+            # Process with Gemini
+            response = self.gemini_client.process_text(
+                summary_prompt,
+                session_history=formatted_history
+            )
+            
+            if not response:
+                return "Unable to generate summary. Please try again."
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error generating summary: {str(e)}")
+            return f"Error generating summary: {str(e)}"
+
+    def _generate_solution(self, summary):
+        """
+        Generates a detailed solution based on the summary.
+        
+        Args:
+            summary: The conversation summary
+            
+        Returns:
+            str: The generated solution
+        """
+        try:
+            # Build the prompt
+            prompt = f"""
+            I'm working on a programming or logical task. Here's the context and problem:
+            
+            # CONTEXT
+            {summary}
+            
+            Please analyze this situation and:
+            1. Identify the core problem or challenge
+            2. Develop a structured approach to solve it
+            3. Provide a detailed solution with code if applicable
+            4. Explain your reasoning
+            """
+            
+            # Format history for Gemini
+            formatted_history = []
+            for msg in self.chat_history:
+                if msg["role"] != "system":
+                    formatted_history.append({
+                        "role": "user" if msg["role"] == "user" else "model",
+                        "parts": [msg["content"]]
+                    })
+            
+            # Add the summary as context
+            formatted_history.append({
+                "role": "user",
+                "parts": [f"Here's a summary of our conversation: {summary}"]
+            })
+            
+            # Process with Gemini
+            response = self.gemini_client.process_text(
+                prompt,
+                session_history=formatted_history
+            )
+            
+            if not response:
+                return "Unable to generate solution. Please try again."
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error generating solution: {str(e)}")
+            return f"Error generating solution: {str(e)}"

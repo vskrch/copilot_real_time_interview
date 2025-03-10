@@ -366,97 +366,84 @@ class SessionManager:
             return False, error_message
         
     def _analyze_image_async(self, messages, image_data):
-        """Performs image analysis asynchronously using Gemini API with OpenAI fallback."""
+        """Performs image analysis using Gemini API."""
         try:
             # Send a processing notification
             self.handle_response("Analyzing the screenshot...", final=False)
             
-            # Check if Gemini API key is available
-            gemini_api_key = os.getenv("GEMINI_API_KEY")
-            use_openai = os.getenv("USE_OPENAI_FOR_IMAGES", "false").lower() == "true"
+            # Initialize Gemini client if needed
+            if not hasattr(self, 'gemini_client'):
+                from .gemini_client import GeminiClient
+                self.gemini_client = GeminiClient()
             
-            if gemini_api_key and not use_openai:
-                # Use Gemini for image analysis
-                try:
-                    # Initialize Gemini client if needed
-                    if not hasattr(self, 'gemini_client'):
-                        from .gemini_client import GeminiClient
-                        self.gemini_client = GeminiClient()
-                    
-                    # Check if Gemini is available
-                    if self.gemini_client.is_available():
-                        logger.info("Using Gemini API for image analysis")
-                        
-                        # Extract text content from messages for context
-                        context = ""
-                        for msg in messages:
-                            if msg["role"] != "system" and isinstance(msg["content"], str):
-                                context += f"{msg['role']}: {msg['content']}\n"
-                        
-                        # Create prompt for image analysis
-                        prompt = f"""
-                        Please analyze this screenshot from a technical interview or coding exercise.
-                        Describe what you see, identify any code, algorithms, or technical concepts.
-                        Provide helpful insights about the content.
-                        
-                        Previous context:
-                        {context}
-                        """
-                        
-                        # Use the gemini_client to analyze the image
-                        success, assistant_response = self.gemini_client.analyze_image(image_data, prompt)
-                        
-                        if not success:
-                            logger.warning(f"Gemini API failed: {assistant_response}. Falling back to OpenAI.")
-                            raise Exception(assistant_response)
-                    else:
-                        raise Exception("Gemini API not available")
-                except Exception as e:
-                    logger.error(f"Error using Gemini API: {str(e)}. Falling back to OpenAI.")
-                    # Fall back to OpenAI
-                    logger.info("Using OpenAI API for image analysis (fallback)")
-                    response = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=messages,
-                        max_tokens=4000
-                    )
-                    
-                    assistant_response = response.choices[0].message.content
-            else:
-                # Use OpenAI directly
-                logger.info("Using OpenAI API for image analysis")
-                response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=messages,
-                    max_tokens=4000
-                )
+            # Check if Gemini is available
+            if not self.gemini_client.is_available():
+                raise Exception("Gemini API not configured")
                 
-                assistant_response = response.choices[0].message.content
+            # Extract text content from messages for context
+            context = ""
+            for msg in messages:
+                if msg["role"] != "system" and isinstance(msg["content"], str):
+                    context += f"{msg['role']}: {msg['content']}\n"
             
-            # Add to chat history
-            self.chat_history.append({
-                "role": "assistant", 
-                "content": assistant_response
-            })
+            # Create prompt for image analysis
+            prompt = f"""
+            Please analyze this screenshot from a technical interview or coding exercise.
+            Describe what you see, identify any code, algorithms, or technical concepts.
+            Provide helpful insights about the content.
             
-            # Log the response
-            logger.info(f"Image analysis response generated: {assistant_response[:100]}...")
+            Previous context:
+            {context}
+            """
             
-            # Send the response as an update - ensure this is marked as final
-            self.handle_response(assistant_response, final=True)
+            # Process with Gemini Vision API
+            response = self.gemini_client.analyze_image(image_data, prompt)
             
-            # Also send a message through the real-time thread to maintain context
-            if hasattr(self, 'text_thread') and self.text_thread and hasattr(self.text_thread, 'connected') and self.text_thread.connected:
-                context_msg = "[I've analyzed the screenshot and provided detailed insights in the response above.]"
-                self.text_thread.send_text(context_msg)
-            
-            # Ensure the response is added to the updates queue for the frontend to retrieve
-            self.response_updates.append(assistant_response)
-            
+            if response:
+                # Send the analysis
+                self.handle_response(response, final=True)
+                logger.info("Image analysis completed successfully")
+            else:
+                raise Exception("No response from Gemini API")
+                
         except Exception as e:
             error_message = f"Error during image analysis: {str(e)}"
             logger.error(error_message)
             self.handle_error(error_message)
+
+
+    def _generate_summary(self, messages):
+        """Generates a summary using Gemini API."""
+        try:
+            if not hasattr(self, 'gemini_client'):
+                from .gemini_client import GeminiClient
+                self.gemini_client = GeminiClient()
+            
+            if not self.gemini_client.is_available():
+                raise Exception("Gemini API not configured")
+            
+            # Format messages for Gemini
+            formatted_messages = []
+            for msg in messages:
+                if msg["role"] != "system":
+                    formatted_messages.append({
+                        "role": "user" if msg["role"] == "user" else "model",
+                        "parts": [msg["content"]]
+                    })
+            
+            prompt = """Please provide a concise summary of this interview conversation. 
+            Identify the main topics discussed, key questions asked, and important points made."""
+            
+            response = self.gemini_client.process_text(prompt, session_history=formatted_messages)
+            
+            if not response:
+                raise Exception("No response from Gemini API")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error generating summary: {str(e)}")
+            return f"Error generating summary: {str(e)}"
 
     def _prepare_messages_with_history(self, base64_image=None):
         """Prepares messages for the API including chat history."""

@@ -28,11 +28,18 @@ def run_api():
     Initialize and run the Flask API server.
     """
     try:
+        # Check for Gemini API key before starting the server
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        
+        if not gemini_api_key:
+            logger.error("No Gemini API key found. Please set the GEMINI_API_KEY environment variable.")
+            sys.exit(1)
+        
         # Import the Flask app and socketio from the api module
         from intervista_assistant.api import app, socketio
         
         # Log startup message
-        logger.info("Starting Intervista Assistant API server...")
+        logger.info("Starting Intervista Assistant API server with Gemini...")
         
         # Get port from environment variables with priority:
         # 1. FLASK_RUN_PORT

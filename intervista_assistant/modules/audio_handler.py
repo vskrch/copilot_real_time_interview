@@ -20,7 +20,7 @@ class AudioHandler:
         self.gemini_client = gemini_client
         
     def process_audio_data(self, audio_data: str, sample_rate: int = 16000, encoding: str = 'LINEAR16') -> Dict[str, Any]:
-        """Process audio data using Gemini API.
+        """Process audio data using local Whisper and Gemini API.
         
         Args:
             audio_data: Base64 encoded audio data
@@ -36,19 +36,42 @@ class AudioHandler:
             
             logger.info(f"Processing audio data: {len(audio_bytes)} bytes")
             
-            # Process with Gemini if available
-            if self.gemini_client.is_available():
-                # Send to Gemini for processing
-                result = self.gemini_client.process_audio(audio_bytes, sample_rate, encoding)
+            # Use local Whisper for transcription
+            from ..modules.whisper_transcriber import WhisperTranscriber
+            
+            # Initialize the transcriber
+            transcriber = WhisperTranscriber()
+            
+            # Get transcription from Whisper
+            transcription_result = transcriber.transcribe_audio(audio_bytes, sample_rate)
+            
+            if not transcription_result or 'text' not in transcription_result:
+                logger.error("Whisper transcription failed")
+                return {'error': 'Transcription failed'}
                 
-                if result and 'transcription' in result:
-                    return result
+            transcription = transcription_result['text']
+            
+            # Process with Gemini if available
+            if self.gemini_client.is_available() and transcription:
+                # Generate response with Gemini
+                success, response = self.gemini_client.generate_text(
+                    f"The user said: '{transcription}'. Provide a helpful response."
+                )
+                
+                if success:
+                    return {
+                        'transcription': transcription,
+                        'response': response
+                    }
                 else:
-                    logger.error("Gemini processing failed or returned no transcription")
-                    return {'error': 'Gemini processing failed'}
+                    logger.error(f"Gemini response generation failed: {response}")
+                    return {
+                        'transcription': transcription,
+                        'error': 'Response generation failed'
+                    }
             else:
-                logger.error("Gemini API not available")
-                return {'error': 'Gemini API not available'}
+                # Just return the transcription
+                return {'transcription': transcription}
                 
         except Exception as e:
             logger.error(f"Error processing audio data: {str(e)}")

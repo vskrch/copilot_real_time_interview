@@ -421,50 +421,87 @@ export default function ChatGPTInterface() {
     }
   };
 
-  const handleAnalyzeScreenshot = async () => {
-    if (!sessionId || !isSessionActive) return;
+  // Fix the API_URL reference error in handleAnalyzeScreenshot function
+const handleAnalyzeScreenshot = async () => {
+  if (!sessionId || !isSessionActive) return;
+  
+  try {
+    setIsCapturingScreen(true);
     
-    try {
-      setIsCapturingScreen(true);
+    // Add a waiting message with a unique identifier
+    const messageId = `screenshot-${Date.now()}`;
+    // @ts-ignore - Adding temporary id for tracking this message
+    setMessages(prev => [...prev, { 
+      role: 'assistant', 
+      content: 'Capturing and analyzing the screen... (please wait a few seconds)',
+      id: messageId 
+    }]);
+    
+    // Capture the screenshot from the browser
+    const imageData = await captureScreenshot(selectedScreen);
+    
+    if (imageData) {
+      // Show a preview of the captured screenshot (optional)
+      setMessages(prev => prev.map(msg => 
+        // @ts-ignore - Using temporary id for tracking
+        msg.id === messageId ? 
+        { ...msg, content: 'Capturing and analyzing the screen... (image sent to server)' } : 
+        msg
+      ));
       
-      // Add a waiting message with a unique identifier
-      const waitingMessageId = `waiting-${Date.now()}`;
-      setMessages(prev => [...prev, {
-        id: waitingMessageId,
-        role: 'assistant',
-        content: 'Analyzing the screenshot...',
-        timestamp: new Date().toISOString()
-      }]);
+      // Change API_URL to API_BASE_URL
+      const response = await fetch(`${API_BASE_URL}/sessions/analyze-screenshot`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          image_data: imageData
+        })
+      });
       
-      // First, request the backend to take a screenshot
-      const success = await apiClient.takeScreenshot(sessionId, selectedScreen);
-      
-      if (!success) {
-        throw new Error("Failed to capture screenshot");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to analyze screenshot');
       }
       
-      // Set a flag to check for new messages in the polling function
-      setAwaitingScreenshotResponse(true);
-      
-      // Log success
-      console.log("Screenshot captured and sent for analysis");
-      
-      // Wait for the response to appear in the next poll
-      // The polling function will remove the waiting message when the real response arrives
-      
-    } catch (error) {
-      console.error('Error analyzing screenshot:', error);
-      setMessages(prev => prev.filter(m => !m.content.includes('Analyzing the screenshot')));
-      setMessages(prev => [...prev, {
-        id: `error-${Date.now()}`,
-        role: 'assistant',
-        content: 'Error analyzing screenshot. Please try again.',
-        timestamp: new Date().toISOString()
-      }]);
-    } finally {
-      setIsCapturingScreen(false);
+      // Remove the temporary message - the SSE stream will handle the response
+      setMessages(prev => prev.filter(msg => 
+        // @ts-ignore - Using temporary id for tracking
+        msg.id !== messageId
+      ));
     }
-  };
+  } catch (error) {
+    console.error('Error analyzing screenshot:', error);
+    
+    // Show error message to user
+    setMessages(prev => {
+      // Find and replace the temporary message if it exists
+      const tempMsgIndex = prev.findIndex(msg => 
+        // @ts-ignore - Using temporary id for tracking
+        msg.id === `screenshot-${Date.now()}`.split('-')[0]
+      );
+      
+      if (tempMsgIndex !== -1) {
+        const newMessages = [...prev];
+        newMessages[tempMsgIndex] = { 
+          role: 'assistant', 
+          content: `Error analyzing screenshot: ${error}. Please check if Gemini API is properly configured.` 
+        };
+        return newMessages;
+      } else {
+        return [...prev, { 
+          role: 'assistant', 
+          content: `Error analyzing screenshot: ${error}. Please check if Gemini API is properly configured.` 
+        }];
+      }
+    });
+  } finally {
+    setIsCapturingScreen(false);
+    setAwaitingScreenshotResponse(false);
+  }
+};
 
   const handleSaveConversation = async () => {
     if (!sessionId) return;

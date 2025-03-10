@@ -107,6 +107,17 @@ if lsof -i:5000 -t &> /dev/null; then
   fi
 fi
 
+# After the existing port checks, add:
+# Check for Gemini API key
+if [ -z "$GEMINI_API_KEY" ]; then
+    if [ -f ".env" ]; then
+        export $(cat .env | grep GEMINI_API_KEY)
+    fi
+    if [ -z "$GEMINI_API_KEY" ]; then
+        handle_error "GEMINI_API_KEY not found in environment or .env file"
+    fi
+fi
+
 # Create log directory if it doesn't exist
 mkdir -p "$SCRIPT_DIR/logs"
 

@@ -90,36 +90,40 @@ class SocketHandlers:
         session = self.active_sessions[session_id]
         
         try:
-            # Decode base64 audio data
-            audio_bytes = base64.b64decode(audio_data_base64)
+            # Use the AudioProcessor to process the audio
+            from .audio_processor import AudioProcessor
             
-            logger.info(f"Received audio data for Gemini processing: {len(audio_bytes)} bytes")
+            # Create an audio processor if not already created
+            if not hasattr(self, 'audio_processor'):
+                self.audio_processor = AudioProcessor(self.gemini_client)
             
-            # Process with Gemini if available
-            if self.gemini_client.is_available():
-                # Send to Gemini for processing
-                result = self.gemini_client.process_audio(audio_bytes, sample_rate, encoding)
+            # Process the audio
+            result = self.audio_processor.process_base64_audio(
+                audio_data_base64, 
+                sample_rate=sample_rate, 
+                encoding=encoding
+            )
+            
+            if result and 'transcription' in result:
+                transcription = result['transcription']
                 
-                if result and 'transcription' in result:
-                    # Handle the transcription result
-                    session.handle_transcription(result['transcription'])
-                    
-                    # If there's a response from Gemini, handle it
-                    if 'response' in result:
-                        session.handle_response(result['response'])
-                    
-                    return {'received': True, 'samples': len(audio_bytes) // 2}
-                else:
-                    logger.error("Gemini processing failed or returned no transcription")
-                    return {'received': True, 'error': 'Gemini processing failed'}
+                # Handle the transcription result
+                session.handle_transcription(transcription)
+                
+                # If there's a response, handle it
+                if 'response' in result and result['response']:
+                    session.handle_response(result['response'])
+                
+                return {'received': True, 'samples': len(base64.b64decode(audio_data_base64)) // 2}
             else:
-                # Fall back to default audio processing
-                logger.info("Gemini API not available for audio processing")
-                return {'received': False, 'error': 'Gemini API not available'}
+                error_msg = result.get('error', 'Unknown error in audio processing')
+                logger.error(f"Audio processing failed: {error_msg}")
+                return {'received': False, 'error': error_msg}
                 
         except Exception as e:
-            logger.error(f"Error processing audio data with Gemini: {str(e)}")
-            return {'received': False, 'error': str(e)}
+            error_message = f"Error processing audio data: {str(e)}"
+            logger.error(error_message)
+            return {'received': False, 'error': error_message}
     
     def handle_audio_data(self, data):
         """Handles audio data received from the client."""

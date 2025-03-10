@@ -341,8 +341,15 @@ class GeminiRealtimeThread(threading.Thread):
             return
         
         try:
-            # Process with Gemini
-            result = self.gemini_client.process_audio(
+            # Use the AudioProcessor to process the audio
+            from .modules.audio_processor import AudioProcessor
+            
+            # Create an audio processor if not already created
+            if not hasattr(self, 'audio_processor'):
+                self.audio_processor = AudioProcessor(self.gemini_client)
+            
+            # Process the audio
+            result = self.audio_processor.process_audio(
                 self.accumulated_audio, 
                 sample_rate=self.RATE, 
                 encoding="LINEAR16"
@@ -362,10 +369,196 @@ class GeminiRealtimeThread(threading.Thread):
                 if 'response' in result and result['response']:
                     self._call_callback('on_response', result['response'])
             else:
-                logger.warning("No transcription result from Gemini")
+                logger.warning("No transcription result from audio processing")
                 
         except Exception as e:
             logger.error(f"Error processing accumulated audio: {str(e)}")
         
         # Reset accumulated audio
         self.accumulated_audio = b''
+    
+    def process_image(self, image_data):
+        """
+        Process an image using Gemini Vision API.
+        
+        Args:
+            image_data: Base64 encoded image data
+            
+        Returns:
+            str: Analysis result or error message
+        """
+        try:
+            # Create prompt for image analysis
+            prompt = """
+            Please analyze this screenshot from a technical interview or coding exercise.
+            Describe what you see, identify any code, algorithms, or technical concepts.
+            Provide helpful insights about the content that would be useful during a job interview.
+            If you see code, explain what it does and suggest improvements or potential issues.
+            """
+            
+            # Use Gemini client to analyze the image
+            success, response = self.gemini_client.analyze_image(image_data, prompt)
+            
+            if success:
+                # Add response to chat history
+                self.chat_history.append({
+                    "role": "user", 
+                    "content": "[Screenshot shared for analysis]"
+                })
+                self.chat_history.append({
+                    "role": "assistant", 
+                    "content": response
+                })
+                
+                return response
+            else:
+                logger.error(f"Gemini image analysis failed: {response}")
+                return f"Error analyzing image with Gemini: {response}"
+                
+        except Exception as e:
+            error_msg = f"Error processing image with Gemini: {str(e)}"
+            logger.error(error_msg)
+            return error_msg
+    
+    def start_think_process(self):
+        """
+        Starts an advanced thinking process that generates a summary
+        and a detailed solution based on the conversation.
+        
+        Returns:
+            Tuple[bool, Optional[str]]: (success, error_message)
+        """
+        if not self.chat_history:
+            return False, "No conversation to analyze."
+        
+        # Start the thinking process in a separate thread
+        threading.Thread(
+            target=self._process_thinking_async,
+            daemon=True
+        ).start()
+        
+        return True, None
+    
+    def _process_thinking_async(self):
+        """Performs the thinking process asynchronously."""
+        try:
+            # First generate a summary
+            summary = self._generate_summary()
+            
+            # Notify the user that the summary is ready
+            self._call_callback('on_response', "**🧠 CONVERSATION ANALYSIS:**\n\n" + summary)
+            
+            # Generate a detailed solution based on the summary
+            solution = self._generate_solution(summary)
+            
+            # Notify the user that the solution is ready
+            self._call_callback('on_response', "**🚀 DETAILED SOLUTION:**\n\n" + solution)
+            
+            # Also send a message through the real-time thread
+            if self.connected:
+                context_msg = "[I have completed an in-depth analysis of our conversation, identified key issues, and generated detailed solutions. If you have specific questions, I am here to help!]"
+                self.send_text(context_msg)
+            
+            logger.info("Thinking process completed successfully")
+            
+        except Exception as e:
+            error_message = f"Error in the thinking process: {str(e)}"
+            logger.error(error_message)
+            self._call_callback('on_error', error_message)
+    
+    def _generate_summary(self):
+        """
+        Generates a summary of the conversation using Gemini API.
+        
+        Returns:
+            str: The generated summary
+        """
+        try:
+            # Create a summary prompt
+            summary_prompt = """Analyze the conversation history and create a concise summary. 
+            Focus on:
+            1. Key problems or questions discussed
+            2. Important context
+            3. Any programming challenges mentioned
+            4. Current state of the discussion
+            
+            Your summary should be comprehensive but brief, highlighting the most important aspects 
+            that would help solve any programming or logical problems mentioned."""
+            
+            # Format history for Gemini
+            formatted_history = self._format_history_for_gemini()
+            
+            # Add the summary request as a user message
+            formatted_history.append({
+                "role": "user",
+                "parts": [summary_prompt]
+            })
+            
+            # Process with Gemini
+            response = self.gemini_client.process_text(
+                summary_prompt,
+                session_history=formatted_history
+            )
+            
+            if not response:
+                return "Unable to generate summary. Please try again."
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error generating summary: {str(e)}")
+            return f"Error generating summary: {str(e)}"
+    
+    def _generate_solution(self, summary):
+        """Generates a detailed solution based on the summary."""
+        try:
+            # Build the prompt
+            prompt = f"""
+            I'm working on a programming or logical task. Here's the context and problem:
+            
+            # CONTEXT
+            {summary}
+            
+            Please analyze this situation and:
+            1. Identify the core problem or challenge
+            2. Develop a structured approach to solve it
+            3. Provide a detailed solution with code if applicable
+            4. Explain your reasoning
+            """
+            
+            # Use Gemini to generate the solution
+            if not self.gemini_client.is_available():
+                # Try to initialize with environment variable
+                self.gemini_client.initialize()
+                
+                # Check again after initialization attempt
+                if not self.gemini_client.is_available():
+                    raise Exception("Gemini API not configured")
+            
+            # Use a valid Gemini model for generating the solution
+            # First try to get the gemini-pro model, which is commonly available
+            model = self.gemini_client.models.get('gemini-pro')
+            
+            # If gemini-pro is not available, try to get any available model
+            if not model:
+                # Get the first available model or default to None
+                available_models = list(self.gemini_client.models.keys())
+                if available_models:
+                    model = self.gemini_client.models.get(available_models[0])
+                    logger.info(f"Using alternative model: {available_models[0]}")
+                else:
+                    raise Exception("No Gemini models available")
+                
+            if not model:
+                raise Exception("Gemini chat model not available")
+                
+            # Generate content
+            response = model.generate_content(prompt)
+            if not response or not hasattr(response, 'text'):
+                raise Exception("Invalid response from Gemini API")
+                
+            return response.text
+            
+        except Exception as e:
+            logger.error(f"Error generating solution: {str(e)}")
+            raise
