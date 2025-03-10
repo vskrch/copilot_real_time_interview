@@ -1,80 +1,59 @@
 #!/usr/bin/env python3
 """
-Launcher for the Intervista Assistant API Server.
+API Launcher for Intervista Assistant.
+This script initializes and runs the Flask API server.
 """
 
 import os
 import sys
 import logging
-from werkzeug.middleware.proxy_fix import ProxyFix
+from pathlib import Path
 
-# Add current directory to path to import local modules
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the main directory to the path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Configure root logger
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler('backend.log'),
-        logging.StreamHandler()  # Add console handler
+        logging.FileHandler("api_server.log"),
+        logging.StreamHandler()
     ]
 )
+logger = logging.getLogger(__name__)
 
-# Now import the app from intervista_assistant.api
-from intervista_assistant.api import app, socketio
-
-def main():
-    """Entry point to start the API server."""
-    port = int(os.environ.get("PORT", 8000))
-    debug = os.environ.get("FLASK_DEBUG", "1") == "1"  # Debug mode enabled by default
-    use_reloader = os.environ.get("FLASK_RELOADER", "1") == "1"  # Reloader enabled by default
-    
-    # Configuration for watchdog
-    extra_files = []
-    
-    # Configuration for improved reloader with watchdog
-    if use_reloader:
-        try:
-            import watchdog
-            reloader_type = "watchdog"
-            logging.info("Using watchdog for reloader - optimized automatic restart")
-            
-            # Add extra files to monitor here
-            # For example: extra_files.append("config.json")
-            
-        except ImportError:
-            reloader_type = "stat"
-            logging.warning("watchdog not available, using standard reloader")
-    else:
-        reloader_type = None
-    
-    app.wsgi_app = ProxyFix(app.wsgi_app)
-    
-    # Configure logging for flask
-    if debug:
-        logging.getLogger('werkzeug').setLevel(logging.INFO)
-        # Modifichiamo il livello di logging per engineio e socketio
-        # da INFO a WARNING per evitare log troppo verbosi
-        logging.getLogger('engineio').setLevel(logging.WARNING)
-        logging.getLogger('socketio').setLevel(logging.WARNING)
+def run_api():
+    """
+    Initialize and run the Flask API server.
+    """
+    try:
+        # Import the Flask app and socketio from the api module
+        from intervista_assistant.api import app, socketio
         
-        print(f"Server running in debug mode with reloader {'enabled' if use_reloader else 'disabled'}")
-        if use_reloader:
-            print(f"Reloader type: {reloader_type}")
-    
-    # Use socketio to run the server instead of app.run()
-    socketio.run(
-        app,
-        debug=debug,
-        host="0.0.0.0",
-        port=port,
-        use_reloader=use_reloader,
-        reloader_type=reloader_type,
-        extra_files=extra_files,
-        allow_unsafe_werkzeug=True,
-        log_output=False  # Disabilitiamo il logging di tutti gli eventi Socket.IO
-    )
+        # Log startup message
+        logger.info("Starting Intervista Assistant API server...")
+        
+        # Get port from environment variables with priority:
+        # 1. FLASK_RUN_PORT
+        # 2. PORT
+        # 3. Default to 8000
+        port = int(os.environ.get("FLASK_RUN_PORT") or os.environ.get("PORT") or 8000)
+        
+        # Log the port being used
+        logger.info(f"Starting server on port {port}")
+        
+        # Run the socketio app
+        socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
+        
+    except ImportError as e:
+        logger.error(f"Import error: {e}")
+        logger.error("Ensure all required dependencies are installed.")
+        sys.exit(1)
+        
+    except Exception as e:
+        logger.error(f"Error during API server startup: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    run_api()

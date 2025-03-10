@@ -24,6 +24,9 @@ if __name__ == "__main__":
         # Startup message
         logger.info("Starting Intervista Assistant...")
         
+        # Set Flask port environment variable to avoid conflict with AirPlay
+        os.environ['FLASK_RUN_PORT'] = '8000'
+        
         # Import and run the application
         from intervista_assistant.main import main
         main()
@@ -36,4 +39,4 @@ if __name__ == "__main__":
         
     except Exception as e:
         print(f"Error during startup: {e}")
-        sys.exit(1) 
+        sys.exit(1)

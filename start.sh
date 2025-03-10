@@ -18,6 +18,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Function to handle errors
+handle_error() {
+  echo "ERROR: $1"
+  echo "Check logs for more details: $SCRIPT_DIR/logs/backend.log and $SCRIPT_DIR/logs/frontend.log"
+  exit 1
+}
+
+# Function to check if service is healthy
+check_health() {
+  local url=$1
+  local service=$2
+  local max_attempts=$3
+  local attempt=1
+  
+  echo "Checking $service health..."
+  while [ $attempt -le $max_attempts ]; do
+    if curl -s "$url" &> /dev/null; then
+      echo "$service is healthy!"
+      return 0
+    fi
+    echo "Attempt $attempt/$max_attempts: $service not ready yet, waiting..."
+    sleep 2
+    attempt=$((attempt+1))
+  done
+  
+  echo "ERROR: $service failed to start properly after $max_attempts attempts."
+  return 1
+}
+
 # Determine the path of the current directory (where the script is located)
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 BACKEND_DIR="$SCRIPT_DIR/intervista_assistant"
@@ -30,21 +59,18 @@ poetry run pip install werkzeug flask flask-cors flask-socketio python-socketio 
 
 # Check that the directories exist
 if [ ! -d "$BACKEND_DIR" ]; then
-  echo "Backend directory not found: $BACKEND_DIR"
-  exit 1
+  handle_error "Backend directory not found: $BACKEND_DIR"
 fi
 
 if [ ! -d "$FRONTEND_DIR" ]; then
-  echo "Frontend directory not found: $FRONTEND_DIR"
-  exit 1
+  handle_error "Frontend directory not found: $FRONTEND_DIR"
 fi
 
 # Check if npm is installed in the frontend directory
 echo "Checking frontend dependencies..."
 cd "$FRONTEND_DIR"
 if ! command -v npm &> /dev/null; then
-  echo "npm not found. Please install Node.js and npm."
-  exit 1
+  handle_error "npm not found. Please install Node.js and npm."
 fi
 
 # Install frontend dependencies if node_modules doesn't exist
@@ -67,6 +93,20 @@ if lsof -i:8000 -t &> /dev/null; then
   sleep 1
 fi
 
+# Also check port 5000 which might be used by Flask by default
+if lsof -i:5000 -t &> /dev/null; then
+  echo "Port 5000 is in use. This might conflict with Flask's default port."
+  echo "Attempting to terminate processes on port 5000..."
+  kill $(lsof -i:5000 -t) 2>/dev/null || true
+  sleep 1
+  
+  # Check if port was freed
+  if lsof -i:5000 -t &> /dev/null; then
+    echo "Warning: Could not free port 5000. This might be used by AirPlay Receiver."
+    echo "You may need to disable AirPlay Receiver in System Preferences."
+  fi
+fi
+
 # Create log directory if it doesn't exist
 mkdir -p "$SCRIPT_DIR/logs"
 
@@ -80,10 +120,14 @@ export PYTHONPATH="$SCRIPT_DIR:$BACKEND_DIR:$PYTHONPATH"
 if [ "$WATCH_MODE" = true ]; then
   export FLASK_DEBUG=1
   export FLASK_RELOADER=1
+  # Explicitly set Flask port to 8000
+  export FLASK_RUN_PORT=8000
   echo "Backend running in watch mode - will automatically reload on file changes"
 else
   export FLASK_DEBUG=0
   export FLASK_RELOADER=0
+  # Explicitly set Flask port to 8000
+  export FLASK_RUN_PORT=8000
 fi
 
 # Run backend with output to console instead of background
@@ -95,6 +139,9 @@ echo "Backend started with PID: $BACKEND_PID"
 echo "Waiting for the backend to be ready..."
 sleep 5
 
+# Check backend health
+check_health "http://localhost:8000/health" "Backend API" 10 || handle_error "Backend failed to start properly"
+
 # Start the frontend in another terminal window on macOS
 echo "Starting the frontend (Next.js)..."
 cd "$FRONTEND_DIR" 
@@ -103,6 +150,9 @@ cd "$FRONTEND_DIR"
 npm run dev 2>&1 | tee "$SCRIPT_DIR/logs/frontend.log" &
 FRONTEND_PID=$!
 echo "Frontend started with PID: $FRONTEND_PID"
+
+# Check frontend health
+check_health "http://localhost:3000" "Frontend" 10 || handle_error "Frontend failed to start properly"
 
 # Function to terminate all processes
 cleanup() {
