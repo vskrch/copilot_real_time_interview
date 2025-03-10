@@ -27,7 +27,9 @@ class ImageProcessor:
             from ..gemini_client import GeminiClient
             self.gemini_client = GeminiClient()
             # Try to initialize with environment variable
-            self.gemini_client.initialize()
+            success = self.gemini_client.initialize()
+            if not success:
+                logger.warning("Failed to initialize Gemini client with environment variable")
         else:
             self.gemini_client = gemini_client
             
@@ -72,11 +74,15 @@ class ImageProcessor:
             # Ensure Gemini client is initialized
             if not self.gemini_client.is_available():
                 # Try to initialize with environment variable
-                self.gemini_client.initialize()
+                api_key = os.getenv("GEMINI_API_KEY")
+                if not api_key:
+                    raise Exception("Gemini API key not found in environment. Please set GEMINI_API_KEY.")
+                    
+                success = self.gemini_client.initialize(api_key)
                 
                 # Check again after initialization attempt
-                if not self.gemini_client.is_available():
-                    raise Exception("Gemini API not configured. Please check your API key.")
+                if not success or not self.gemini_client.is_available():
+                    raise Exception("Gemini API initialization failed. Please check your API key.")
             
             # Extract text content from messages for context
             context = ""
@@ -118,7 +124,7 @@ class ImageProcessor:
             error_message = f"Error during image analysis: {str(e)}"
             logger.error(error_message)
             if self.handle_response:
-                self.handle_response(f"Error analyzing image: {str(e)}", final=True)
+                self.handle_response(f"Error analyzing image: {str(e)}. Please ensure GEMINI_API_KEY is set in your environment.", final=True)
     
     def _prepare_messages_with_history(self, chat_history: List[Dict[str, Any]], base64_image: str = None) -> List[Dict[str, Any]]:
         """Prepares messages for the API including chat history."""

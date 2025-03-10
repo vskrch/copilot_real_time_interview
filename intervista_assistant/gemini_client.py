@@ -44,10 +44,42 @@ class GeminiClient:
             genai.configure(api_key=self.api_key)
             
             # Check available models
-            self.models = {
-            'chat': genai.GenerativeModel('gemini-pro'),  # For text conversations
-            'vision': genai.GenerativeModel('gemini-pro-vision'),  # For image analysis
-            }
+            available_models = []
+            try:
+                # Get list of available models
+                model_list = genai.list_models()
+                available_models = [model.name for model in model_list if 'generateContent' in model.supported_generation_methods]
+                logger.info(f"Available Gemini models: {available_models}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve model list: {str(e)}")
+            
+            # Initialize models dictionary with safe defaults
+            self.models = {}
+            
+            # Try to initialize standard models
+            try:
+                self.models['gemini-pro'] = genai.GenerativeModel('gemini-pro')
+                logger.info("Successfully initialized gemini-pro model")
+            except Exception as e:
+                logger.warning(f"Could not initialize gemini-pro model: {str(e)}")
+            
+            try:
+                self.models['gemini-pro-vision'] = genai.GenerativeModel('gemini-pro-vision')
+                logger.info("Successfully initialized gemini-pro-vision model")
+            except Exception as e:
+                logger.warning(f"Could not initialize gemini-pro-vision model: {str(e)}")
+            
+            # Set aliases for backward compatibility
+            if 'gemini-pro' in self.models:
+                self.models['chat'] = self.models['gemini-pro']
+            
+            if 'gemini-pro-vision' in self.models:
+                self.models['vision'] = self.models['gemini-pro-vision']
+            
+            # Check if we have at least one working model
+            if not self.models:
+                logger.error("No Gemini models could be initialized")
+                return False
             
             self.initialized = True
             logger.info("Gemini API client initialized successfully")
@@ -57,25 +89,31 @@ class GeminiClient:
             logger.error(f"Error initializing Gemini API client: {str(e)}")
             self.initialized = False
             return False
-            
+    
     def is_available(self):
-        """Check if the Gemini API client is available.
+        """Check if the Gemini client is initialized and ready to use.
         
         Returns:
-            bool: True if the client is initialized
+            bool: True if the client is initialized and has at least one model
         """
-        return self.initialized
-        
+        return self.initialized and bool(self.models)
+    
     def generate_text(self, prompt, context=None):
         """Generate text using Gemini API."""
         if not self.is_available():
             return False, "Gemini API not initialized"
         
         try:
-            # Use the chat model for text generation
-            model = self.models.get('chat')
+            # Try to use gemini-pro model first, then fall back to 'chat' alias
+            model = self.models.get('gemini-pro') or self.models.get('chat')
+            
+            # If still no model, try to get any available model
+            if not model and self.models:
+                model = next(iter(self.models.values()))
+                logger.info(f"Using alternative model for text generation: {model}")
+            
             if not model:
-                return False, "Chat model not available"
+                return False, "No text generation model available"
             
             # Generate content
             response = model.generate_content(prompt)
