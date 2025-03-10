@@ -25,11 +25,29 @@ class ImageProcessor:
         # If no client provided, create one
         if gemini_client is None:
             from ..gemini_client import GeminiClient
+            import os
+            
+            # Check for API key in environment
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                logger.error("GEMINI_API_KEY environment variable not set")
+                # Try to look for a .env file and load it
+                try:
+                    from dotenv import load_dotenv
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        api_key = os.getenv("GEMINI_API_KEY")
+                        if api_key:
+                            logger.info("Loaded GEMINI_API_KEY from .env file")
+                except ImportError:
+                    logger.warning("python-dotenv not installed, cannot load from .env file")
+            
             self.gemini_client = GeminiClient()
             # Try to initialize with environment variable
-            success = self.gemini_client.initialize()
+            success = self.gemini_client.initialize(api_key)
             if not success:
-                logger.warning("Failed to initialize Gemini client with environment variable")
+                logger.error("Failed to initialize Gemini client. Please ensure GEMINI_API_KEY is set correctly.")
         else:
             self.gemini_client = gemini_client
             
@@ -72,17 +90,52 @@ class ImageProcessor:
                 self.handle_response("Analyzing the screenshot...", final=False)
             
             # Ensure Gemini client is initialized
-            if not self.gemini_client.is_available():
-                # Try to initialize with environment variable
+            if not hasattr(self.gemini_client, 'is_available') or not self.gemini_client.is_available():
+                # Try to initialize with environment variable again
+                import os
+                from dotenv import load_dotenv
+                
+                # Try to load from .env file first
+                try:
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        logger.info(f"Loaded environment from {env_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load .env file: {str(e)}")
+                
                 api_key = os.getenv("GEMINI_API_KEY")
                 if not api_key:
-                    raise Exception("Gemini API key not found in environment. Please set GEMINI_API_KEY.")
+                    error_msg = "Gemini API key not found. Please set GEMINI_API_KEY environment variable or add it to .env file."
+                    logger.error(error_msg)
+                    if self.handle_response:
+                        self.handle_response(f"Error: {error_msg}", final=True)
+                    return
                     
                 success = self.gemini_client.initialize(api_key)
                 
                 # Check again after initialization attempt
-                if not success or not self.gemini_client.is_available():
-                    raise Exception("Gemini API initialization failed. Please check your API key.")
+                if not hasattr(self.gemini_client, 'is_available') or not self.gemini_client.is_available():
+                    error_msg = "Gemini API initialization failed. Please check your API key."
+                    logger.error(error_msg)
+                    if self.handle_response:
+                        self.handle_response(f"Error: {error_msg}", final=True)
+                    return
+            
+            # Check if vision model is available
+            if not hasattr(self.gemini_client, 'models') or ('gemini-pro-vision' not in self.gemini_client.models and 'vision' not in self.gemini_client.models):
+                # Try to initialize the model directly
+                try:
+                    import google.generativeai as genai
+                    self.gemini_client.models['gemini-pro-vision'] = genai.GenerativeModel('gemini-pro-vision')
+                    self.gemini_client.models['vision'] = self.gemini_client.models['gemini-pro-vision']
+                    logger.info("Late initialization of gemini-pro-vision model succeeded")
+                except Exception as e:
+                    error_msg = f"The required 'gemini-pro-vision' model is not available. Error: {str(e)}"
+                    logger.error(error_msg)
+                    if self.handle_response:
+                        self.handle_response(f"Error: {error_msg}", final=True)
+                    return
             
             # Extract text content from messages for context
             context = ""
@@ -105,7 +158,9 @@ class ImageProcessor:
             
             if not success:
                 logger.warning(f"Gemini API failed: {assistant_response}")
-                raise Exception(assistant_response)
+                if self.handle_response:
+                    self.handle_response(f"Error analyzing image: {assistant_response}", final=True)
+                return
             
             # Add to chat history
             chat_history.append({
@@ -170,13 +225,33 @@ class ImageProcessor:
         """
         try:
             # Ensure Gemini client is initialized
-            if not self.gemini_client.is_available():
+            if not hasattr(self.gemini_client, 'is_available') or not self.gemini_client.is_available():
                 # Try to initialize with environment variable
-                self.gemini_client.initialize()
+                import os
+                from dotenv import load_dotenv
+                
+                # Try to load from .env file first
+                try:
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        logger.info(f"Loaded environment from {env_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load .env file: {str(e)}")
+                
+                api_key = os.getenv("GEMINI_API_KEY")
+                if not api_key:
+                    error_msg = "Gemini API key not found. Please set GEMINI_API_KEY environment variable or add it to .env file."
+                    logger.error(error_msg)
+                    return {"error": error_msg}
+                    
+                success = self.gemini_client.initialize(api_key)
                 
                 # Check again after initialization attempt
-                if not self.gemini_client.is_available():
-                    raise Exception("Gemini API not configured. Please check your API key.")
+                if not hasattr(self.gemini_client, 'is_available') or not self.gemini_client.is_available():
+                    error_msg = "Gemini API initialization failed. Please check your API key."
+                    logger.error(error_msg)
+                    return {"error": error_msg}
             
             # Create prompt for image analysis
             prompt = """
@@ -193,7 +268,9 @@ class ImageProcessor:
             success, response = self.gemini_client.analyze_image(image_data, prompt)
             
             if not success:
-                raise Exception(f"Gemini image analysis failed: {response}")
+                error_msg = f"Gemini image analysis failed: {response}"
+                logger.error(error_msg)
+                return {"error": error_msg}
                 
             # Send the analysis through the callback
             if self.handle_response:

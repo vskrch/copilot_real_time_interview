@@ -254,58 +254,147 @@ class SessionManager:
         try:
             # First generate a summary
             self.handle_response("🧠 Analyzing our conversation...", final=False)
+            
+            # Check if Gemini client is available and properly configured
+            if not hasattr(self.gemini_client, 'is_available') or not self.gemini_client.is_available():
+                # Try to initialize with environment variable
+                import os
+                from dotenv import load_dotenv
+                
+                # Try to load from .env file first
+                try:
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        logger.info(f"Loaded environment from {env_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load .env file: {str(e)}")
+                
+                api_key = os.getenv("GEMINI_API_KEY")
+                if not api_key:
+                    error_msg = "Gemini API key not found. Please set GEMINI_API_KEY environment variable or add it to .env file."
+                    logger.error(error_msg)
+                    self.handle_response(f"**ERROR:** {error_msg}", final=True)
+                    self.handle_error(error_msg)
+                    return
+                    
+                success = self.gemini_client.initialize(api_key)
+                
+                # Check again after initialization attempt
+                if not hasattr(self.gemini_client, 'is_available') or not self.gemini_client.is_available():
+                    error_msg = "Gemini API initialization failed. Please check your API key."
+                    logger.error(error_msg)
+                    self.handle_response(f"**ERROR:** {error_msg}", final=True)
+                    self.handle_error(error_msg)
+                    return
+            
+            # Check if required models are available
+            if not hasattr(self.gemini_client, 'models') or 'gemini-pro' not in self.gemini_client.models:
+                # Try to initialize the model directly
+                try:
+                    import google.generativeai as genai
+                    self.gemini_client.models['gemini-pro'] = genai.GenerativeModel('gemini-pro')
+                    self.gemini_client.models['chat'] = self.gemini_client.models['gemini-pro']
+                    logger.info("Late initialization of gemini-pro model succeeded")
+                except Exception as e:
+                    error_msg = f"The required 'gemini-pro' model is not available. Error: {str(e)}"
+                    logger.error(error_msg)
+                    self.handle_response(f"**ERROR:** {error_msg}", final=True)
+                    self.handle_error(error_msg)
+                    return
+            
+            # Generate summary
             summary = self._generate_summary()
             
+            # Check if summary generation failed
+            if summary.startswith("Error generating summary:"):
+                self.handle_response(f"**🧠 CONVERSATION ANALYSIS:**\n\n{summary}", final=True)
+                self.handle_error(summary)
+                return
+            
             # Notify the user that the summary is ready
-            self.handle_response(f"**CONVERSATION ANALYSIS:**\n\n{summary}", final=False)
+            self.handle_response(f"**🧠 CONVERSATION ANALYSIS:**\n\n{summary}", final=False)
             
             # Generate a detailed solution based on the summary
             self.handle_response("🚀 Generating detailed insights...", final=False)
             solution = self._generate_solution(summary)
             
+            # Check if solution generation failed
+            if solution.startswith("Error generating solution:"):
+                self.handle_response(f"**🚀 DETAILED SOLUTION:**\n\n{solution}", final=True)
+                self.handle_error(solution)
+                return
+            
             # Notify the user that the solution is ready
-            self.handle_response(f"**DETAILED SOLUTION:**\n\n{solution}", final=True)
+            self.handle_response(f"**🚀 DETAILED SOLUTION:**\n\n{solution}", final=True)
             
             logger.info(f"Thinking process completed successfully for session {self.session_id}")
             
         except Exception as e:
             error_message = f"Error in the thinking process: {str(e)}"
             logger.error(error_message)
+            self.handle_response(f"**ERROR:** {error_message}", final=True)
             self.handle_error(error_message)
 
     def _generate_summary(self):
-        """Generates a summary of the conversation using Gemini API."""
+        """Generate a summary of the conversation using Gemini."""
         try:
-            # Create a summary prompt
-            summary_prompt = """Analyze the conversation history and create a concise summary. 
-            Focus on:
-            1. Key problems or questions discussed
-            2. Important context
-            3. Any programming challenges mentioned
-            4. Current state of the discussion
+            # Check if Gemini client is available
+            if not self.gemini_client.is_available():
+                # Try to initialize with environment variable
+                import os
+                from dotenv import load_dotenv
+                
+                # Try to load from .env file first
+                try:
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        logger.info(f"Loaded environment from {env_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load .env file: {str(e)}")
+                
+                api_key = os.getenv("GEMINI_API_KEY")
+                if not api_key:
+                    raise Exception("Gemini API key not found. Please set GEMINI_API_KEY environment variable or add it to .env file.")
+                    
+                success = self.gemini_client.initialize(api_key)
+                
+                # Check again after initialization attempt
+                if not self.gemini_client.is_available():
+                    raise Exception("Gemini API initialization failed. Please check your API key.")
             
-            Your summary should be comprehensive but brief, highlighting the most important aspects 
-            that would help solve any programming or logical problems mentioned."""
+            # Ensure we have the gemini-pro model available
+            if 'gemini-pro' not in self.gemini_client.models:
+                raise Exception("The required 'gemini-pro' model is not available. Please check your Gemini API configuration.")
             
-            # Format history for Gemini
-            formatted_history = []
+            # Extract conversation history
+            conversation_text = ""
             for msg in self.chat_history:
-                if msg["role"] != "system":
-                    formatted_history.append({
-                        "role": "user" if msg["role"] == "user" else "model",
-                        "parts": [msg["content"]]
-                    })
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    conversation_text += f"{role}: {content}\n\n"
             
-            # Process with Gemini
-            response = self.gemini_client.process_text(
-                summary_prompt,
-                session_history=formatted_history
-            )
+            # Create prompt for summary generation
+            prompt = f"""
+            Please analyze the following conversation between a user and an AI assistant during a technical interview.
+            Identify key topics, questions, and challenges discussed.
+            Provide a concise summary of the main points and any technical concepts covered.
             
-            if not response:
-                return "Unable to generate summary. Please try again."
+            Conversation:
+            {conversation_text}
             
-            return response
+            Summary:
+            """
+            
+            # Generate summary using Gemini
+            success, summary = self.gemini_client.generate_text(prompt)
+            
+            if not success:
+                raise Exception(f"Failed to generate summary: {summary}")
+            
+            return summary
             
         except Exception as e:
             logger.error(f"Error generating summary: {str(e)}")
@@ -322,6 +411,14 @@ class SessionManager:
             str: The generated solution
         """
         try:
+            # Check if Gemini client is available
+            if not hasattr(self.gemini_client, 'is_available') or not self.gemini_client.is_available():
+                raise Exception("Gemini API not initialized")
+            
+            # Ensure we have the gemini-pro model available
+            if not hasattr(self.gemini_client, 'models') or 'gemini-pro' not in self.gemini_client.models:
+                raise Exception("The required 'gemini-pro' model is not available")
+            
             # Build the prompt
             prompt = f"""
             I'm working on a programming or logical task. Here's the context and problem:
@@ -336,31 +433,41 @@ class SessionManager:
             4. Explain your reasoning
             """
             
-            # Format history for Gemini
-            formatted_history = []
-            for msg in self.chat_history:
-                if msg["role"] != "system":
-                    formatted_history.append({
-                        "role": "user" if msg["role"] == "user" else "model",
-                        "parts": [msg["content"]]
-                    })
-            
-            # Add the summary as context
-            formatted_history.append({
-                "role": "user",
-                "parts": [f"Here's a summary of our conversation: {summary}"]
-            })
-            
-            # Process with Gemini
-            response = self.gemini_client.process_text(
-                prompt,
-                session_history=formatted_history
-            )
-            
-            if not response:
-                return "Unable to generate solution. Please try again."
-            
-            return response
+            # Check if process_text method exists, otherwise use generate_text
+            if hasattr(self.gemini_client, 'process_text'):
+                # Format history for Gemini
+                formatted_history = []
+                for msg in self.chat_history:
+                    if msg["role"] != "system":
+                        formatted_history.append({
+                            "role": "user" if msg["role"] == "user" else "model",
+                            "parts": [msg["content"]]
+                        })
+                
+                # Add the summary as context
+                formatted_history.append({
+                    "role": "user",
+                    "parts": [f"Here's a summary of our conversation: {summary}"]
+                })
+                
+                # Process with Gemini
+                response = self.gemini_client.process_text(
+                    prompt,
+                    session_history=formatted_history
+                )
+                
+                if not response:
+                    return "Unable to generate solution. Please try again."
+                
+                return response
+            else:
+                # Fallback to generate_text if process_text is not available
+                success, solution = self.gemini_client.generate_text(prompt)
+                
+                if not success:
+                    raise Exception(f"Failed to generate solution: {solution}")
+                
+                return solution
             
         except Exception as e:
             logger.error(f"Error generating solution: {str(e)}")
