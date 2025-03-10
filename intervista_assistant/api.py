@@ -22,15 +22,6 @@ from flask_socketio import SocketIO, emit
 
 from openai import OpenAI
 from dotenv import load_dotenv  # Add dotenv import
-gemini_client = GeminiClient()
-
-# Import the thread for real-time API communication with OpenAI
-try:
-    # Try to import as a module
-    from intervista_assistant.web_realtime_text_thread import WebRealtimeTextThread
-except ImportError:
-    # Local import fallback
-    from web_realtime_text_thread import WebRealtimeTextThread
 
 # Logging configuration
 logging.basicConfig(
@@ -43,6 +34,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logger.info("Backend server started")
+
+# Initialize Gemini client with API key from environment
+gemini_client = GeminiClient()
+# Try to initialize the Gemini client
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+if gemini_api_key:
+    gemini_client.initialize(gemini_api_key)
+    logger.info("Gemini client initialized with API key from environment")
+else:
+    logger.warning("No Gemini API key found in environment variables. Some features may not work properly.")
+
+# Import the thread for real-time API communication with OpenAI
+try:
+    # Try to import as a module
+    from intervista_assistant.web_realtime_text_thread import WebRealtimeTextThread
+except ImportError:
+    # Local import fallback
+    from web_realtime_text_thread import WebRealtimeTextThread
 
 # Load environment variables from .env file
 load_dotenv()
@@ -339,7 +348,7 @@ class SessionManager:
     
     def process_screenshot(self, image_data):
         """
-        Analyzes a screenshot using the OpenAI API.
+        Analyzes a screenshot using the Gemini API.
         
         Args:
             image_data: Image data in base64 format
@@ -348,6 +357,30 @@ class SessionManager:
             (success, response_or_error): Tuple with status and response/error
         """
         try:
+            # Check if Gemini client is properly initialized
+            global gemini_client
+            if not gemini_client.is_available():
+                # Try to initialize with environment variable
+                import os
+                from dotenv import load_dotenv
+                
+                # Try to load from .env file
+                try:
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        logger.info(f"Loaded environment from {env_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load .env file: {str(e)}")
+                
+                api_key = os.getenv("GEMINI_API_KEY")
+                if api_key:
+                    success = gemini_client.initialize(api_key)
+                    if not success:
+                        return False, "Failed to initialize Gemini API with provided key."
+                else:
+                    return False, "Gemini API key not found. Please set GEMINI_API_KEY environment variable."
+            
             # Prepare messages with history and image
             messages = self._prepare_messages_with_history(base64_image=image_data)
             
@@ -371,14 +404,34 @@ class SessionManager:
             # Send a processing notification
             self.handle_response("Analyzing the screenshot...", final=False)
             
-            # Initialize Gemini client if needed
-            if not hasattr(self, 'gemini_client'):
-                from .gemini_client import GeminiClient
-                self.gemini_client = GeminiClient()
+            # Use the global gemini_client instance
+            global gemini_client
             
-            # Check if Gemini is available
-            if not self.gemini_client.is_available():
-                raise Exception("Gemini API not configured")
+            # If global client is not available, try to initialize a local one
+            if not gemini_client.is_available():
+                # Try to initialize with environment variable
+                import os
+                from dotenv import load_dotenv
+                
+                # Try to load from .env file
+                try:
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        logger.info(f"Loaded environment from {env_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load .env file: {str(e)}")
+                
+                api_key = os.getenv("GEMINI_API_KEY")
+                if api_key:
+                    gemini_client.initialize(api_key)
+                    logger.info("Gemini client initialized with API key from environment")
+                else:
+                    raise Exception("Gemini API key not found. Please set GEMINI_API_KEY environment variable.")
+            
+            # Check if Gemini is available after initialization attempt
+            if not gemini_client.is_available():
+                raise Exception("Gemini API not configured properly")
                 
             # Extract text content from messages for context
             context = ""
@@ -397,7 +450,7 @@ class SessionManager:
             """
             
             # Process with Gemini Vision API
-            response = self.gemini_client.analyze_image(image_data, prompt)
+            response = gemini_client.analyze_image(image_data, prompt)
             
             if response:
                 # Send the analysis
@@ -415,12 +468,34 @@ class SessionManager:
     def _generate_summary(self, messages):
         """Generates a summary using Gemini API."""
         try:
-            if not hasattr(self, 'gemini_client'):
-                from .gemini_client import GeminiClient
-                self.gemini_client = GeminiClient()
+            # Use the global gemini_client instance
+            global gemini_client
             
-            if not self.gemini_client.is_available():
-                raise Exception("Gemini API not configured")
+            # If global client is not available, try to initialize a local one
+            if not gemini_client.is_available():
+                # Try to initialize with environment variable
+                import os
+                from dotenv import load_dotenv
+                
+                # Try to load from .env file
+                try:
+                    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(env_path)
+                        logger.info(f"Loaded environment from {env_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load .env file: {str(e)}")
+                
+                api_key = os.getenv("GEMINI_API_KEY")
+                if api_key:
+                    gemini_client.initialize(api_key)
+                    logger.info("Gemini client initialized with API key from environment")
+                else:
+                    raise Exception("Gemini API key not found. Please set GEMINI_API_KEY environment variable.")
+            
+            # Check if Gemini is available after initialization attempt
+            if not gemini_client.is_available():
+                raise Exception("Gemini API not configured properly")
             
             # Format messages for Gemini
             formatted_messages = []
@@ -484,6 +559,31 @@ class SessionManager:
         if not self.chat_history:
             return False, "No conversation to analyze."
         
+        # Check if Gemini client is available before starting the process
+        global gemini_client
+        if not gemini_client.is_available():
+            # Try to initialize with environment variable
+            import os
+            from dotenv import load_dotenv
+            
+            # Try to load from .env file
+            try:
+                env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+                if os.path.exists(env_path):
+                    load_dotenv(env_path)
+                    logger.info(f"Loaded environment from {env_path}")
+            except Exception as e:
+                logger.warning(f"Could not load .env file: {str(e)}")
+            
+            api_key = os.getenv("GEMINI_API_KEY")
+            if api_key:
+                success = gemini_client.initialize(api_key)
+                if not success:
+                    return False, "Failed to initialize Gemini API with provided key."
+                logger.info("Gemini client initialized with API key from environment")
+            else:
+                return False, "Gemini API key not found. Please set GEMINI_API_KEY environment variable."
+        
         # Start the thinking process in a separate thread
         threading.Thread(
             target=self._process_thinking_async,
@@ -496,6 +596,16 @@ class SessionManager:
     def _process_thinking_async(self, messages):
         """Performs the thinking process asynchronously."""
         try:
+            # Use the global gemini_client instance
+            global gemini_client
+            
+            # Check if Gemini is available before proceeding
+            if not gemini_client.is_available():
+                error_message = "Gemini API not configured properly for thinking process"
+                self.handle_error(error_message)
+                logger.error(error_message)
+                return
+                
             # First generate a summary
             summary = self._generate_summary(messages)
             
@@ -902,6 +1012,24 @@ def analyze_screenshot():
     try:
         # Validate the base64 image data
         base64.b64decode(image_data)
+        
+        # Check if Gemini client is properly initialized
+        global gemini_client
+        if not gemini_client.is_available():
+            # Try to initialize with environment variable
+            api_key = os.getenv("GEMINI_API_KEY")
+            if api_key:
+                success = gemini_client.initialize(api_key)
+                if not success:
+                    return jsonify({
+                        "success": False,
+                        "error": "Failed to initialize Gemini API with provided key."
+                    }), 400
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Gemini API key not found. Please set GEMINI_API_KEY environment variable."
+                }), 400
         
         session = active_sessions[session_id]
         logger.info(f"Processing screenshot for session {session_id} (size: {len(image_data) // 1024}KB)")
